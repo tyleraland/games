@@ -1,30 +1,32 @@
 import { useMemo } from 'react';
 import { RigidBody } from '@react-three/rapier';
 import type { Vector3Tuple } from 'three';
-import { BRICK, WALL } from './config';
+import { BRICK, PYRAMID } from './config';
 
-// Palette for the bricks (Nord-ish), cycled across the wall.
+// Palette for the bricks (Nord-ish), cycled across the stack.
 const COLORS = ['#88c0d0', '#81a1c1', '#8fbcbb', '#a3be8c', '#ebcb8b'];
 
-// Build the brick centre positions once: aligned columns, `rows` high, centred
-// on x = 0 and touching along x so the wall reads as a single face.
-export function buildWall(): Vector3Tuple[] {
+// Build the brick centre positions once as a pyramid: the base row has
+// `PYRAMID.base` bricks, each row above has one fewer and is offset by half a
+// brick so it bridges the two below.
+export function buildPyramid(): Vector3Tuple[] {
 	const [w, h] = BRICK;
 	const positions: Vector3Tuple[] = [];
-	for (let r = 0; r < WALL.rows; r++) {
-		for (let c = 0; c < WALL.cols; c++) {
-			const x = (c - (WALL.cols - 1) / 2) * w;
-			const y = h / 2 + r * h;
-			positions.push([x, y, WALL.z]);
+	for (let r = 0; r < PYRAMID.base; r++) {
+		const count = PYRAMID.base - r;
+		const y = h / 2 + r * h;
+		for (let c = 0; c < count; c++) {
+			const x = (c - (count - 1) / 2) * w;
+			positions.push([x, y, PYRAMID.z]);
 		}
 	}
 	return positions;
 }
 
-// A stack of dynamic RigidBody bricks with cuboid colliders. At rest the wall
-// stands; a projectile impact scatters it (Milestone 4).
+// A stack of dynamic RigidBody bricks with cuboid colliders. At rest the
+// pyramid stands; a projectile impact scatters it (Milestone 4).
 export default function Blocks() {
-	const layout = useMemo(buildWall, []);
+	const layout = useMemo(buildPyramid, []);
 
 	return (
 		<>

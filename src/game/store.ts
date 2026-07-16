@@ -22,7 +22,7 @@ interface GameState {
 }
 
 export const useGame = create<GameState>((set, get) => ({
-	angle: 35,
+	angle: 25,
 	power: 55,
 	score: 0,
 	hasLaunched: false,
