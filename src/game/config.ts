@@ -31,3 +31,13 @@ export const GROUND_SIZE = 80;
 export const BRICK: Vector3Tuple = [1, 0.6, 0.7];
 // cols * rows bricks. 5 * 2 = 10.
 export const WALL = { cols: 5, rows: 2, z: -3 };
+
+// --- Projectile / slingshot (Milestone 3+) ---
+// The projectile spawns here and hovers (gravity disabled) until launched.
+export const SLINGSHOT_ORIGIN: Vector3Tuple = [0, 1.6, 7];
+export const PROJECTILE_RADIUS = 0.4;
+// Launch speed (m/s) = power * SPEED_PER_POWER (Milestone 4).
+export const SPEED_PER_POWER = 0.32;
+// A brick counts as "knocked down" once it moves this far (metres) from its
+// start horizontally, or drops below its start height (Milestone 5).
+export const DISPLACEMENT_THRESHOLD = 0.75;

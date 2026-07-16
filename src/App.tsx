@@ -1,5 +1,6 @@
 import { Canvas } from '@react-three/fiber';
 import Scene from './game/Scene';
+import UI from './game/UI';
 import { CAMERA, MAX_DPR } from './game/config';
 
 function App() {
@@ -19,6 +20,7 @@ function App() {
 			>
 				<Scene />
 			</Canvas>
+			<UI />
 		</div>
 	);
 }
