@@ -25,12 +25,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Enables GitHub Pages via the API on first run (enablement: true), so no
-      # manual "Settings -> Pages -> Source: GitHub Actions" step is required.
-      - name: Setup Pages
-        uses: actions/configure-pages@v5
-        with:
-          enablement: true
+      # NOTE: GitHub Pages must be enabled once for this repo with source set to
+      # "GitHub Actions" (Settings -> Pages). The workflow GITHUB_TOKEN cannot
+      # create the Pages site itself, so this cannot be automated here.
 
       - name: Setup Node
         uses: actions/setup-node@v4
