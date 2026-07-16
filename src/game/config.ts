@@ -24,3 +24,10 @@ export const MAX_DPR = Math.min(
 
 // Ground is a large thin fixed box whose top surface sits at y = 0.
 export const GROUND_SIZE = 80;
+
+// --- Block wall (Milestone 2) ---
+// A brick is [width, height, depth]. Bricks are stacked in aligned columns so
+// the wall is stable at rest, and touch along x so it reads as one wall.
+export const BRICK: Vector3Tuple = [1, 0.6, 0.7];
+// cols * rows bricks. 5 * 2 = 10.
+export const WALL = { cols: 5, rows: 2, z: -3 };
