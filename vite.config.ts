@@ -5,5 +5,7 @@ import glsl from 'vite-plugin-glsl';
 // https://vite.dev/config/
 export default defineConfig({
 	plugins: [react(), glsl()],
-	base: process.env.GH_PAGES ? '/r3f-vite-starter/' : '/',
+	// On GitHub Pages the app is served from https://<user>.github.io/games/,
+	// so assets must be requested under /games/. Locally the base stays '/'.
+	base: process.env.GH_PAGES ? '/games/' : '/',
 });
