@@ -28,20 +28,30 @@ npm run build    # type-check + production build
 
 Then open the printed local URL.
 
+## How to play
+
+- **Angle** / **Power** sliders set the shot; their current values are shown.
+- **Launch** fires a single impulse — the ball arcs into the brick pyramid.
+- **Score** counts how many bricks were knocked past a displacement threshold.
+- **Reset** restores the pyramid, zeroes the score, and gives a fresh ball.
+
 ## Project structure
 
 Each concern lives in its own file under `src/game/`:
 
 | File | Responsibility |
 | --- | --- |
-| `config.ts` | Shared constants (gravity, camera, DPR cap, layout) |
+| `config.ts` | Shared constants (gravity, camera, DPR cap, layout, launch tuning) |
+| `store.ts` | zustand game state (angle, power, score, launch/reset signals) |
 | `Scene.tsx` | The 3D world, wrapped in Rapier `<Physics>` |
 | `Lights.tsx` | Ambient + shadow-casting directional lighting |
 | `Ground.tsx` | Fixed ground slab |
-
-_(more files are added as the game grows across milestones)_
+| `Blocks.tsx` | Dynamic brick pyramid + per-frame displacement scoring |
+| `Projectile.tsx` | Slingshot projectile; applies the launch impulse |
+| `UI.tsx` | HTML overlay: sliders, Launch/Reset, score |
 
 ## Performance notes
 
 - Renderer DPR is capped at `Math.min(window.devicePixelRatio, 2)` for mobile.
-- Block counts are kept modest and objects are not recreated every frame.
+- Brick count is modest (10) and the layout is built once, not per frame.
+- `Reset` remounts via a React `key` bump rather than mutating bodies by hand.

@@ -24,3 +24,23 @@ export const MAX_DPR = Math.min(
 
 // Ground is a large thin fixed box whose top surface sits at y = 0.
 export const GROUND_SIZE = 80;
+
+// --- Block pyramid (Milestone 2) ---
+// A brick is [width, height, depth]. Bricks are stacked as a pyramid: each row
+// offset by half a brick so upper bricks bridge the two below (stable at rest).
+export const BRICK: Vector3Tuple = [1, 0.6, 0.7];
+// base rows down to 1: base=4 -> 4+3+2+1 = 10 bricks.
+export const PYRAMID = { base: 4, z: -2.5 };
+
+// --- Projectile / slingshot (Milestone 3+) ---
+// The projectile spawns near the ground and hovers (gravity disabled) until
+// launched, so shots rise into the pyramid rather than sailing over it. Kept
+// fairly close to the pyramid so shots arrive with enough energy to scatter it.
+export const SLINGSHOT_ORIGIN: Vector3Tuple = [0, 0.8, 3.5];
+export const PROJECTILE_RADIUS = 0.4;
+// Launch speed (m/s) = power * SPEED_PER_POWER (Milestone 4). Tuned so the
+// default 45deg / power 50 shot arcs ~10m and lands on the wall.
+export const SPEED_PER_POWER = 0.2;
+// A brick counts as "knocked down" once it moves this far (metres) from its
+// start horizontally, or drops below its start height (Milestone 5).
+export const DISPLACEMENT_THRESHOLD = 0.75;

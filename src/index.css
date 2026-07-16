@@ -27,4 +27,86 @@ body {
 .canvas-container {
 	width: 100vw;
 	height: 100vh;
+	position: relative;
+}
+
+/* HTML overlay: fills the viewport but only the panel captures pointer events,
+   so dragging elsewhere still reaches the canvas. */
+.ui-overlay {
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+	padding: 16px;
+}
+
+.ui-panel {
+	pointer-events: auto;
+	width: min(260px, calc(100vw - 32px));
+	background: rgba(20, 24, 32, 0.72);
+	border: 1px solid rgba(255, 255, 255, 0.12);
+	border-radius: 10px;
+	padding: 14px 16px;
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	backdrop-filter: blur(6px);
+	font-size: 14px;
+	user-select: none;
+}
+
+.ui-title {
+	font-size: 13px;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	opacity: 0.6;
+}
+
+.ui-score {
+	font-size: 20px;
+	font-weight: 700;
+}
+
+.ui-control {
+	display: grid;
+	grid-template-columns: 48px 1fr 42px;
+	align-items: center;
+	gap: 8px;
+}
+
+.ui-control input[type='range'] {
+	width: 100%;
+	accent-color: #88c0d0;
+}
+
+.ui-value {
+	text-align: right;
+	font-variant-numeric: tabular-nums;
+	opacity: 0.85;
+}
+
+.ui-buttons {
+	display: flex;
+	gap: 8px;
+	margin-top: 4px;
+}
+
+.ui-buttons button {
+	flex: 1;
+	padding: 9px 10px;
+	border-radius: 6px;
+	border: none;
+	cursor: pointer;
+	background: #5e81ac;
+	color: white;
+	font-weight: 600;
+	font-size: 14px;
+}
+
+.ui-buttons button:last-child {
+	background: #4c566a;
+}
+
+.ui-buttons button:disabled {
+	opacity: 0.45;
+	cursor: not-allowed;
 }
