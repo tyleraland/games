@@ -30,6 +30,163 @@ body {
 	position: relative;
 }
 
+/* Link back to the landing page, shown over the game canvas. */
+.back-link {
+	position: absolute;
+	right: 16px;
+	top: 16px;
+	padding: 8px 12px;
+	border-radius: 8px;
+	background: rgba(20, 24, 32, 0.72);
+	border: 1px solid rgba(255, 255, 255, 0.12);
+	color: rgba(255, 255, 255, 0.87);
+	text-decoration: none;
+	font-size: 14px;
+	font-weight: 600;
+	backdrop-filter: blur(6px);
+}
+
+.back-link:hover {
+	background: rgba(40, 46, 58, 0.85);
+}
+
+/* ---- Landing page ---- */
+.landing {
+	min-height: 100vh;
+	max-width: 720px;
+	margin: 0 auto;
+	padding: 48px 20px 64px;
+	box-sizing: border-box;
+}
+
+.landing-header {
+	margin-bottom: 28px;
+}
+
+.landing-header h1 {
+	font-size: 40px;
+	font-weight: 800;
+	letter-spacing: -0.02em;
+}
+
+.landing-tagline {
+	margin-top: 6px;
+	opacity: 0.65;
+}
+
+.game-list {
+	list-style: none;
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+}
+
+.game-card {
+	display: flex;
+	align-items: center;
+	gap: 16px;
+	padding: 16px 18px;
+	border-radius: 12px;
+	background: rgba(255, 255, 255, 0.04);
+	border: 1px solid rgba(255, 255, 255, 0.1);
+	color: inherit;
+	text-decoration: none;
+	transition: background 0.15s, border-color 0.15s, transform 0.15s;
+}
+
+.game-card:hover {
+	background: rgba(136, 192, 208, 0.1);
+	border-color: rgba(136, 192, 208, 0.5);
+	transform: translateY(-1px);
+}
+
+.game-icon {
+	font-size: 32px;
+	line-height: 1;
+}
+
+.game-text {
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+	flex: 1;
+}
+
+.game-title {
+	font-size: 18px;
+	font-weight: 700;
+}
+
+.game-desc {
+	font-size: 14px;
+	opacity: 0.7;
+}
+
+.game-arrow {
+	opacity: 0.5;
+	font-size: 20px;
+}
+
+/* ---- Build info footer ---- */
+.build-info {
+	margin-top: 40px;
+	padding-top: 20px;
+	border-top: 1px solid rgba(255, 255, 255, 0.1);
+	font-size: 13px;
+}
+
+.build-sha {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-bottom: 12px;
+}
+
+.build-label {
+	text-transform: uppercase;
+	letter-spacing: 0.08em;
+	opacity: 0.55;
+	font-size: 11px;
+}
+
+.build-info code {
+	font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+	background: rgba(255, 255, 255, 0.08);
+	padding: 2px 6px;
+	border-radius: 4px;
+}
+
+.commit-list {
+	list-style: none;
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.commit {
+	display: grid;
+	grid-template-columns: auto 1fr;
+	align-items: baseline;
+	gap: 8px;
+	padding: 4px 0;
+}
+
+.commit-hash {
+	font-size: 12px;
+}
+
+.commit-subject {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.commit-meta {
+	grid-column: 2;
+	font-size: 12px;
+	opacity: 0.5;
+}
+
 /* HTML overlay: fills the viewport but only the panel captures pointer events,
    so dragging elsewhere still reaches the canvas. */
 .ui-overlay {
