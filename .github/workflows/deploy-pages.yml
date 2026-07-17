@@ -24,6 +24,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Full history so the landing page can list the last few commits
+          # (the build reads `git log`); the default shallow clone has only 1.
+          fetch-depth: 0
 
       # NOTE: GitHub Pages must be enabled once for this repo with source set to
       # "GitHub Actions" (Settings -> Pages). The workflow GITHUB_TOKEN cannot

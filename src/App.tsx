@@ -1,27 +1,19 @@
-import { Canvas } from '@react-three/fiber';
-import Scene from './game/Scene';
-import UI from './game/UI';
-import { CAMERA, MAX_DPR } from './game/config';
+import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
+import Landing from './routes/Landing';
+import SlingshotGame from './routes/SlingshotGame';
 
+// HashRouter keeps deep links working on GitHub Pages (a static host) without
+// server-side rewrite rules — routes live after the URL hash.
 function App() {
 	return (
-		<div className="canvas-container">
-			<Canvas
-				shadows
-				// Cap device pixel ratio for mobile performance.
-				dpr={MAX_DPR}
-				camera={{
-					position: CAMERA.position,
-					fov: CAMERA.fov,
-					near: CAMERA.near,
-					far: CAMERA.far,
-				}}
-				onCreated={({ camera }) => camera.lookAt(...CAMERA.target)}
-			>
-				<Scene />
-			</Canvas>
-			<UI />
-		</div>
+		<HashRouter>
+			<Routes>
+				<Route path="/" element={<Landing />} />
+				<Route path="/slingshot" element={<SlingshotGame />} />
+				{/* Unknown paths fall back to the landing page. */}
+				<Route path="*" element={<Navigate to="/" replace />} />
+			</Routes>
+		</HashRouter>
 	);
 }
 
