@@ -16,4 +16,11 @@ export const GAMES: GameEntry[] = [
 			'Aim angle and power to arc a ball into a brick pyramid and knock it down.',
 		icon: '🎯',
 	},
+	{
+		slug: 'flowy',
+		title: 'Flowy',
+		description:
+			'Wire a grid of nodes to a pulsing source. Watch the volts sag, mind the brownout, buy more copper.',
+		icon: '⚡',
+	},
 ];
