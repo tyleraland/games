@@ -33,7 +33,9 @@ export default defineConfig({
 	plugins: [react(), glsl()],
 	// On GitHub Pages the app is served from https://<user>.github.io/games/,
 	// so assets must be requested under /games/. Locally the base stays '/'.
-	base: process.env.GH_PAGES ? '/games/' : '/',
+	// BASE_PATH overrides both, so a branch preview can be built to sit in a
+	// subdirectory of the same site (/games/preview/<branch>/).
+	base: process.env.BASE_PATH || (process.env.GH_PAGES ? '/games/' : '/'),
 	define: {
 		__GIT_INFO__: JSON.stringify(gitInfo()),
 	},

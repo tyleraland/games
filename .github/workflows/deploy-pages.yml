@@ -3,7 +3,10 @@ name: Deploy to GitHub Pages
 on:
   # Publish on every push to main.
   push:
-    branches: [main]
+    # Pushing a work branch republishes the site with that branch's preview
+    # refreshed. Pages serves a single site, so every deploy rebuilds main and
+    # all previews together — a preview push never replaces the live site.
+    branches: [main, 'claude/**']
   # Allow manual runs from the Actions tab.
   workflow_dispatch:
 
@@ -47,6 +50,41 @@ jobs:
           # Sets the Vite base path to /games/ (see vite.config.ts).
           GH_PAGES: '1'
         run: npm run build
+
+      # Every work branch gets its own copy of the site under /games/preview/,
+      # so a change can be looked at on a real URL without going near the live
+      # one. Pages replaces the whole site per deploy, so previews have to be
+      # rebuilt alongside main rather than published on their own. Branches that
+      # have been deleted simply stop being built.
+      - name: Build branch previews
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          mkdir -p dist/preview
+          links=""
+          for ref in $(git for-each-ref --format='%(refname:short)' 'refs/remotes/origin/claude/*'); do
+            branch="${ref#origin/}"
+            slug=$(printf '%s' "$branch" | tr '/' '-' | tr -cd '[:alnum:]-')
+            echo "::group::preview $branch"
+            rm -rf /tmp/preview-src
+            if ! git worktree add --detach /tmp/preview-src "$ref"; then
+              echo "could not check out $ref"; echo "::endgroup::"; continue
+            fi
+            # Share the root install; all branches here track one lockfile.
+            ln -s "$PWD/node_modules" /tmp/preview-src/node_modules
+            if (cd /tmp/preview-src && BASE_PATH="/games/preview/$slug/" npx vite build); then
+              mkdir -p "dist/preview/$slug"
+              cp -r /tmp/preview-src/dist/. "dist/preview/$slug/"
+              links="$links<li><a href=\"/games/preview/$slug/\">$branch</a></li>"
+              echo "built preview for $branch -> /games/preview/$slug/"
+            else
+              echo "preview build FAILED for $branch (main is unaffected)"
+            fi
+            git worktree remove --force /tmp/preview-src || true
+            echo "::endgroup::"
+          done
+          # A plain index so the previews are discoverable without guessing slugs.
+          printf '%s' "<!doctype html><meta charset=utf-8><title>Previews</title><h1>Branch previews</h1><ul>$links</ul>" > dist/preview/index.html
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
