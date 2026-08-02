@@ -18,17 +18,19 @@ import {
 } from './config';
 import { solve, type Solution } from './sim';
 import {
-	edgeId,
 	getNode,
+	ghostLinks,
 	linkProblem,
 	makeEdge,
 	type FlowyEdge,
+	type GhostLink,
 } from './world';
 
 /** What the player currently has picked, for the inspector panel. */
 export type Selection =
 	| { type: 'node'; id: string }
 	| { type: 'edge'; id: string }
+	| { type: 'ghost'; id: string }
 	| null;
 
 /** Snapshot of the last beat, for the HUD. */
@@ -82,27 +84,44 @@ interface FlowyState {
 	levels: Record<UpgradeKind, number>;
 	meters: Meters;
 
-	/** UI: 'select' inspects, 'build' wires the next two nodes clicked. */
-	mode: 'select' | 'build';
+	/** UI: 'select' inspects, 'add' overlays every connection you could buy. */
+	mode: 'select' | 'add';
 	selection: Selection;
-	/** First endpoint chosen while in build mode. */
-	linkFrom: string | null;
+	/** The connections on offer while in add mode. Recomputed as the grid grows. */
+	ghosts: GhostLink[];
 	/** Transient message shown under the HUD (bad purchase, blackout, …). */
 	notice: string | null;
 
 	tick: () => void;
-	setMode: (mode: 'select' | 'build') => void;
+	setMode: (mode: 'select' | 'add') => void;
 	select: (selection: Selection) => void;
-	/** Click a node: selects it, or advances the two-step build. */
+	/** Click a node: inspects it. */
 	tapNode: (id: string) => void;
-	cancelLink: () => void;
-	buildLink: (from: string, to: string) => void;
+	/** Buy the ghost currently selected. */
+	confirmGhost: () => void;
 	flipPolarity: (id: string) => void;
+	/** Swap which end feeds which, when a run was laid the wrong way round. */
+	reverseLink: (id: string) => void;
 	toggleEnabled: (id: string) => void;
 	removeLink: (id: string) => void;
 	buy: (kind: UpgradeKind) => void;
 	resetBreaker: () => void;
 	notify: (message: string | null) => void;
+}
+
+/**
+ * The connections currently on offer. Everything the source can reach counts as
+ * "on the network", plus the source itself, so a fresh game still has somewhere
+ * to start.
+ */
+function buildGhosts(
+	edges: Record<string, FlowyEdge>,
+	solution: Solution,
+): GhostLink[] {
+	const network = new Set<string>([SOURCE_ID, ...solution.order]);
+	const rankOf = new Map<string, number>();
+	solution.order.forEach((id, i) => rankOf.set(id, i));
+	return ghostLinks(network, edges, (id) => rankOf.get(id) ?? Infinity);
 }
 
 /**
@@ -137,7 +156,7 @@ export const useFlowy = create<FlowyState>((set, get) => ({
 
 	mode: 'select',
 	selection: { type: 'node', id: SOURCE_ID },
-	linkFrom: null,
+	ghosts: [],
 	notice: null,
 
 	/* ---------------------------------------------------------------- */
@@ -239,56 +258,54 @@ export const useFlowy = create<FlowyState>((set, get) => ({
 	/* Player actions                                                    */
 	/* ---------------------------------------------------------------- */
 
-	setMode: (mode) => set({ mode, linkFrom: null, notice: null }),
-	select: (selection) => set({ selection }),
-	notify: (notice) => set({ notice }),
-	cancelLink: () => set({ linkFrom: null }),
-
-	tapNode: (id) => {
+	setMode: (mode) => {
 		const s = get();
-		if (s.mode !== 'build') {
-			set({ selection: { type: 'node', id }, notice: null });
-			return;
-		}
-		if (!s.linkFrom) {
-			set({ linkFrom: id, selection: { type: 'node', id }, notice: null });
-			return;
-		}
-		if (s.linkFrom === id) {
-			set({ linkFrom: null });
-			return;
-		}
-		get().buildLink(s.linkFrom, id);
+		set({
+			mode,
+			// Offers are only meaningful while you are shopping for one.
+			ghosts: mode === 'add' ? buildGhosts(s.edges, s.solution) : [],
+			selection: s.selection?.type === 'ghost' ? null : s.selection,
+			notice: null,
+		});
 	},
 
-	buildLink: (from, to) => {
+	select: (selection) => set({ selection }),
+	notify: (notice) => set({ notice }),
+
+	tapNode: (id) => set({ selection: { type: 'node', id }, notice: null }),
+
+	confirmGhost: () => {
 		const s = get();
-		const a = getNode(from);
-		const b = getNode(to);
+		if (s.selection?.type !== 'ghost') return;
+		const ghost = s.ghosts.find((g) => g.id === s.selection!.id);
+		if (!ghost) return;
+
+		const a = getNode(ghost.from);
+		const b = getNode(ghost.to);
 		if (!a || !b) return;
 
+		// Re-check rather than trust the offer: the graph may have moved on.
 		const problem = linkProblem(a, b, s.edges);
 		if (problem) {
-			set({ notice: problem, linkFrom: null });
+			set({ notice: problem, selection: null });
 			return;
 		}
 		const edge = makeEdge(a, b);
 		if (s.coins < edge.paid) {
-			set({
-				notice: `Not enough coins — this run costs ${edge.paid}`,
-				linkFrom: null,
-			});
+			set({ notice: `Not enough coins — this run costs ${edge.paid}` });
 			return;
 		}
 
 		const edges = { ...s.edges, [edge.id]: edge };
+		const solution = resolve(edges, s.levels, s.tripped);
 		set({
 			edges,
 			coins: s.coins - edge.paid,
-			// Chain from the node just wired, so long runs are a series of clicks.
-			linkFrom: to,
+			solution,
+			// Stay in add mode with a refreshed set of offers, so laying a run is
+			// tap-confirm-tap-confirm rather than a trip back through the toolbar.
+			ghosts: buildGhosts(edges, solution),
 			selection: { type: 'edge', id: edge.id },
-			solution: resolve(edges, s.levels, s.tripped),
 			notice: null,
 		});
 	},
@@ -304,12 +321,50 @@ export const useFlowy = create<FlowyState>((set, get) => ({
 		set({ edges, solution: resolve(edges, s.levels, s.tripped) });
 	},
 
+	reverseLink: (id) => {
+		const s = get();
+		const edge = s.edges[id];
+		if (!edge) return;
+		const a = getNode(edge.to);
+		const b = getNode(edge.from);
+		if (!a || !b) return;
+
+		const rest = { ...s.edges };
+		delete rest[id];
+		const problem = linkProblem(a, b, rest);
+		if (problem) {
+			set({ notice: problem });
+			return;
+		}
+		// Same wire, same price already paid — only which end feeds which changes.
+		const flipped: FlowyEdge = {
+			...edge,
+			id: `${edge.to}>${edge.from}`,
+			from: edge.to,
+			to: edge.from,
+		};
+		const edges = { ...rest, [flipped.id]: flipped };
+		const solution = resolve(edges, s.levels, s.tripped);
+		set({
+			edges,
+			solution,
+			ghosts: s.mode === 'add' ? buildGhosts(edges, solution) : s.ghosts,
+			selection: { type: 'edge', id: flipped.id },
+			notice: null,
+		});
+	},
+
 	toggleEnabled: (id) => {
 		const s = get();
 		const edge = s.edges[id];
 		if (!edge) return;
 		const edges = { ...s.edges, [id]: { ...edge, enabled: !edge.enabled } };
-		set({ edges, solution: resolve(edges, s.levels, s.tripped) });
+		const solution = resolve(edges, s.levels, s.tripped);
+		set({
+			edges,
+			solution,
+			ghosts: s.mode === 'add' ? buildGhosts(edges, solution) : s.ghosts,
+		});
 	},
 
 	removeLink: (id) => {
@@ -318,11 +373,13 @@ export const useFlowy = create<FlowyState>((set, get) => ({
 		if (!edge) return;
 		const edges = { ...s.edges };
 		delete edges[id];
+		const solution = resolve(edges, s.levels, s.tripped);
 		set({
 			edges,
 			coins: s.coins + Math.floor(edge.paid * REFUND_FRACTION),
 			selection: null,
-			solution: resolve(edges, s.levels, s.tripped),
+			solution,
+			ghosts: s.mode === 'add' ? buildGhosts(edges, solution) : s.ghosts,
 		});
 	},
 
@@ -367,7 +424,3 @@ export const flowyState = () => useFlowy.getState();
 if (import.meta.env.DEV) {
 	(window as unknown as { flowy?: typeof useFlowy }).flowy = useFlowy;
 }
-
-/** The id a hovered node would connect *from*, if a build is in progress. */
-export const pendingEdgeId = (from: string | null, to: string | null) =>
-	from && to ? edgeId(from, to) : null;

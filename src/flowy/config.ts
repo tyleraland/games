@@ -173,4 +173,8 @@ export const COLORS = {
 	dead: '#2a3140',
 	select: '#f4f1de',
 	text: '#c7d0dd',
+	/** Connections on offer — distinct from both rails so offers never read as live. */
+	ghost: '#6fd6c4',
+	/** An offer you cannot currently afford. */
+	ghostPoor: '#6b7488',
 };

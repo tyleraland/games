@@ -234,11 +234,80 @@ export function linkProblem(
 	edges: Record<string, FlowyEdge>,
 ): string | null {
 	if (from.id === to.id) return 'A node cannot feed itself';
+	// The source is the root of every supply path. A connection pointing into it
+	// can never carry a thing, so selling one would just be taking the player's
+	// coins for a wire that is dead the moment it is built.
+	if (to.id === SOURCE_ID)
+		return 'The source only sends — nothing can feed back into it';
 	if (edges[edgeId(from.id, to.id)]) return 'Already connected';
 	const length = edgeLength(from, to);
 	if (length > MAX_LINK_DIST)
 		return `Too far — ${length.toFixed(2)}u exceeds the ${MAX_LINK_DIST}u reach`;
 	return null;
+}
+
+/** A connection the player could buy, offered up for inspection. */
+export interface GhostLink {
+	id: string;
+	from: string;
+	to: string;
+	length: number;
+	ohms: number;
+	cost: number;
+}
+
+/**
+ * Every connection worth offering, given what is already wired up.
+ *
+ * Candidates always run *outward*: from a node already on the network to one
+ * within reach. When both ends are already on it the connection is oriented
+ * from the better-fed end, so a proposal can never point the wrong way up the
+ * supply path — which is the whole reason for offering these rather than
+ * letting the player pick two endpoints and hope they chose the right order.
+ *
+ * `rank` is supply-tree distance from the source (Infinity for unreached
+ * nodes), which is what decides "better-fed".
+ */
+export function ghostLinks(
+	network: Iterable<string>,
+	edges: Record<string, FlowyEdge>,
+	rank: (id: string) => number,
+	limit = 400,
+): GhostLink[] {
+	const found = new Map<string, GhostLink>();
+	const reach = Math.ceil(MAX_LINK_DIST);
+
+	for (const id of network) {
+		const from = getNode(id);
+		if (!from) continue;
+		for (let dy = -reach; dy <= reach; dy++) {
+			for (let dx = -reach; dx <= reach; dx++) {
+				if (dx === 0 && dy === 0) continue;
+				const to = nodeAt(from.x + dx, from.y + dy);
+				if (!to) continue;
+				if (linkProblem(from, to, edges)) continue;
+
+				// Emit each pair once, from whichever end is closer to the source.
+				const a = rank(from.id);
+				const b = rank(to.id);
+				if (b < a || (b === a && to.id < from.id)) continue;
+
+				const key = edgeId(from.id, to.id);
+				if (found.has(key)) continue;
+				const length = edgeLength(from, to);
+				found.set(key, {
+					id: key,
+					from: from.id,
+					to: to.id,
+					length,
+					ohms: length * WIRE_OHMS_PER_UNIT,
+					cost: linkCost(length),
+				});
+				if (found.size >= limit) return [...found.values()];
+			}
+		}
+	}
+	return [...found.values()];
 }
 
 export function makeEdge(from: FlowyNode, to: FlowyNode): FlowyEdge {

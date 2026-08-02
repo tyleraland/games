@@ -65,13 +65,21 @@ current, every wire drops voltage, and the source only has so many watts.
 
 - **Drag** to pan, **scroll** to zoom, <kbd>h</kbd> to fly back to the source.
   An arrow at the screen edge points home when the source is off-view.
-- **Build connection** (or <kbd>b</kbd>), then click a node and another within
-  3 units. Building chains from the node you just placed, so a long run is a
-  series of clicks. <kbd>Esc</kbd> cancels.
-- **Click** any node or connection to inspect its volts, amps, ohms and watts.
-- Selected connections can be **flipped** between `+` and `−`, **disabled**, or
-  torn out for half their cost.
+- **Add connection** (or <kbd>a</kbd>) overlays every connection you could buy
+  as a dashed run with its price on a handle at the midpoint. Tap a handle to
+  see what it costs and which way it would feed, then **Confirm**. You stay in
+  add mode with a refreshed set of offers, so laying a long run is
+  tap-confirm-tap-confirm. <kbd>Esc</kbd> to stop.
+- **Tap** any node or connection to inspect its volts, amps, ohms and watts.
+- Selected connections can be **flipped** between `+` and `−`, **reversed**,
+  **disabled**, or torn out for half their cost.
 - Spend coins on **Voltage**, **Capacity** and **Battery** upgrades.
+
+Offers always run *outward* — from a node already on the network to one within
+reach, or from the better-fed end when both are already wired. Direction is
+decided by the offer rather than by which endpoint you happened to tap first,
+so a run cannot be laid backwards. Nothing can point into the source: it is the
+root of every supply path, so a connection into it could never carry anything.
 
 ### The model
 

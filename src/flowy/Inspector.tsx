@@ -5,10 +5,9 @@ import {
 	REFUND_FRACTION,
 	SAG_BROWNOUT,
 	SOURCE_ID,
-	linkCost,
 } from './config';
 import { useFlowy } from './store';
-import { edgeLength, getNode, linkProblem, type FlowyEdge } from './world';
+import { getNode, type FlowyEdge, type GhostLink } from './world';
 
 const fmt = (n: number, digits = 2) => n.toFixed(digits);
 
@@ -17,22 +16,38 @@ export default function Inspector() {
 	const selection = useFlowy((s) => s.selection);
 	const edges = useFlowy((s) => s.edges);
 	const solution = useFlowy((s) => s.solution);
-	const linkFrom = useFlowy((s) => s.linkFrom);
-	const coins = useFlowy((s) => s.coins);
+	const ghosts = useFlowy((s) => s.ghosts);
+	const mode = useFlowy((s) => s.mode);
 
 	if (!selection) {
 		return (
 			<aside className="flowy-inspector">
 				<div className="flowy-empty">
-					<h2>Nothing selected</h2>
+					<h2>{mode === 'add' ? 'Pick a connection' : 'Nothing selected'}</h2>
 					<p>
-						Click a node or a connection to inspect it. Drag to pan, scroll to
-						zoom, press <kbd>h</kbd> to return to the source.
+						{mode === 'add' ? (
+							<>
+								Every connection you could buy is drawn dashed, priced at its
+								midpoint. Tap one to see what it would cost and which way it
+								would feed, then confirm. <kbd>Esc</kbd> to stop.
+							</>
+						) : (
+							<>
+								Tap a node or a connection to inspect it. Drag to pan, scroll to
+								zoom, press <kbd>h</kbd> to return to the source.
+							</>
+						)}
 					</p>
 					<Legend />
 				</div>
 			</aside>
 		);
+	}
+
+	if (selection.type === 'ghost') {
+		const ghost = ghosts.find((g) => g.id === selection.id);
+		if (!ghost) return <aside className="flowy-inspector" />;
+		return <GhostPanel ghost={ghost} />;
 	}
 
 	if (selection.type === 'edge') {
@@ -50,13 +65,6 @@ export default function Inspector() {
 	const incoming = Object.values(edges).filter((e) => e.to === node.id);
 	const outgoing = Object.values(edges).filter((e) => e.from === node.id);
 	const feed = solution.parent.get(node.id);
-
-	// While a connection is half-built, show what finishing it here would cost.
-	const pending = linkFrom && linkFrom !== node.id ? getNode(linkFrom) : null;
-	const pendingProblem = pending ? linkProblem(pending, node, edges) : null;
-	const pendingCost = pending
-		? linkCost(edgeLength(pending, node))
-		: 0;
 
 	return (
 		<aside className="flowy-inspector">
@@ -78,17 +86,6 @@ export default function Inspector() {
 			</header>
 
 			<p className="flowy-blurb">{node.def.blurb}</p>
-
-			{pending && (
-				<div className={`flowy-pending${pendingProblem ? ' bad' : ''}`}>
-					{pendingProblem ??
-						`Connect from (${pending.x}, ${pending.y}) — ${fmt(
-							edgeLength(pending, node),
-						)}u for ${pendingCost}c${
-							coins < pendingCost ? ' (you cannot afford it)' : ''
-						}`}
-				</div>
-			)}
 
 			{node.id === SOURCE_ID && (
 				<dl className="flowy-readout">
@@ -158,9 +155,80 @@ export default function Inspector() {
 	);
 }
 
+/** A connection on offer: what it would cost, and what it would do. */
+function GhostPanel({ ghost }: { ghost: GhostLink }) {
+	const coins = useFlowy((s) => s.coins);
+	const solution = useFlowy((s) => s.solution);
+	const confirm = useFlowy((s) => s.confirmGhost);
+	const select = useFlowy((s) => s.select);
+
+	const from = getNode(ghost.from);
+	const to = getNode(ghost.to);
+	if (!from || !to) return <aside className="flowy-inspector" />;
+
+	const affordable = coins >= ghost.cost;
+	const feeding = solution.energized.has(from.id);
+	const alreadyLive = solution.order.includes(to.id);
+
+	return (
+		<aside className="flowy-inspector">
+			<header className="flowy-panel-head">
+				<div>
+					<h2>Add connection</h2>
+					<p className="flowy-coords">
+						({from.x}, {from.y}) → ({to.x}, {to.y})
+					</p>
+				</div>
+				<span className={`flowy-pill cost${affordable ? ' live' : ''}`}>
+					{ghost.cost} coins
+				</span>
+			</header>
+
+			<p className="flowy-blurb">
+				Charge would run from the {from.def.label.toLowerCase()} into the{' '}
+				{to.def.label.toLowerCase()}
+				{to.def.yield > 0 && ', which pays out once it is lit'}.
+				{!feeding &&
+					' The feeding end is dark right now, so nothing will move until it is lit.'}
+				{alreadyLive &&
+					' That end is already on the network — this would be a second route into it, idle unless it undercuts the current one, and opposing it if you flip the polarity.'}
+			</p>
+
+			<dl className="flowy-readout">
+				<Row label="Length" value={`${fmt(ghost.length)} u`} />
+				<Row label="Wire resistance" value={`${fmt(ghost.ohms)} Ω`} />
+				<Row label="Adds draw" value={`${fmt(to.def.draw, 3)} A`} />
+				<Row label="Node resistance" value={`${fmt(to.def.resistance)} Ω`} />
+				<Row label="Cost" value={`${ghost.cost} c`} />
+				<Row label="You have" value={`${fmt(coins, 1)} c`} />
+			</dl>
+
+			{!affordable && (
+				<p className="flowy-hint">
+					Short by {fmt(ghost.cost - coins, 1)} coins.
+				</p>
+			)}
+
+			<div className="flowy-actions">
+				<button
+					className="flowy-btn primary"
+					disabled={!affordable}
+					onClick={confirm}
+				>
+					Confirm — {ghost.cost} c
+				</button>
+				<button className="flowy-btn" onClick={() => select(null)}>
+					Cancel
+				</button>
+			</div>
+		</aside>
+	);
+}
+
 function EdgePanel({ edge }: { edge: FlowyEdge }) {
 	const solution = useFlowy((s) => s.solution);
 	const flip = useFlowy((s) => s.flipPolarity);
+	const reverse = useFlowy((s) => s.reverseLink);
 	const toggle = useFlowy((s) => s.toggleEnabled);
 	const remove = useFlowy((s) => s.removeLink);
 
@@ -169,6 +237,23 @@ function EdgePanel({ edge }: { edge: FlowyEdge }) {
 	const amps = solution.edgeAmps.get(edge.id) ?? 0;
 	const drop = amps * edge.ohms;
 	const carrying = solution.parent.get(edge.to) === edge.id;
+
+	// Why an enabled run is idle. These are genuinely different faults and the
+	// fix for each is different, so saying "a lower-resistance route won" for all
+	// of them sends the player looking in the wrong place.
+	let idleReason: string | null = null;
+	if (edge.enabled && !carrying) {
+		if (edge.to === SOURCE_ID) {
+			idleReason =
+				'This points into the source, which is the root of every supply path — nothing can feed it, so this run can never carry anything. Reverse it.';
+		} else if (!solution.order.includes(edge.from)) {
+			idleReason =
+				'The feeding end is not reachable from the source, so there is nothing here to pass on.';
+		} else {
+			idleReason =
+				'Charge is taking a lower-resistance route into that node, so this run is idle. It still opposes the feed if their polarities disagree.';
+		}
+	}
 
 	return (
 		<aside className="flowy-inspector">
@@ -188,13 +273,7 @@ function EdgePanel({ edge }: { edge: FlowyEdge }) {
 				{edge.polarity > 0
 					? 'Passes the upstream potential through unchanged.'
 					: 'Inverts what it carries — downstream sits on the negative rail.'}
-				{edge.enabled && !carrying && (
-					<>
-						{' '}
-						Charge is taking a lower-resistance route, so this run is idle. It
-						still opposes the feed if their polarities disagree.
-					</>
-				)}
+				{idleReason && <> {idleReason}</>}
 			</p>
 
 			<dl className="flowy-readout">
@@ -210,6 +289,10 @@ function EdgePanel({ edge }: { edge: FlowyEdge }) {
 			<div className="flowy-actions">
 				<button className="flowy-btn" onClick={() => flip(edge.id)}>
 					Flip to {edge.polarity > 0 ? '−' : '+'}
+				</button>
+				{/* Free, because it is the same wire — only which end feeds changes. */}
+				<button className="flowy-btn" onClick={() => reverse(edge.id)}>
+					Reverse direction
 				</button>
 				<button className="flowy-btn" onClick={() => toggle(edge.id)}>
 					{edge.enabled ? 'Disable' : 'Enable'}

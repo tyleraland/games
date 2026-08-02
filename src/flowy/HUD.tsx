@@ -4,6 +4,7 @@ import {
 	SAG_SEVERE,
 	SAG_TRIP,
 	batteryJoules,
+	sourceMaxWatts,
 	sourceOhms,
 	sourceVolts,
 	upgradeCost,
@@ -47,6 +48,7 @@ function sagBand(sag: number, tripped: boolean) {
 export default function HUD() {
 	const coins = useFlowy((s) => s.coins);
 	const meters = useFlowy((s) => s.meters);
+	const solution = useFlowy((s) => s.solution);
 	const levels = useFlowy((s) => s.levels);
 	const stored = useFlowy((s) => s.stored);
 	const tripped = useFlowy((s) => s.tripped);
@@ -59,8 +61,11 @@ export default function HUD() {
 	const openVolts = sourceVolts(levels.volts);
 	const ohms = sourceOhms(levels.watts);
 	const capJ = batteryJoules(levels.battery);
-	const terminal = tripped ? 0 : meters.terminalVolts;
-	const sag = tripped ? 1 : meters.sag;
+	// The gauge reads the live solve rather than last beat's meters, so it is
+	// right from the first frame and reacts the instant a connection is built
+	// instead of lagging a beat behind.
+	const terminal = tripped ? 0 : solution.terminalVolts;
+	const sag = tripped ? 1 : solution.sag;
 	const band = sagBand(sag, tripped);
 
 	// The gauge runs from a dead bus to open-circuit, so the bar length *is* the
@@ -72,15 +77,15 @@ export default function HUD() {
 			<div className="flowy-hud-row">
 				<Stat label="Coins" value={fmt(coins, coins < 1000 ? 1 : 0)} strong />
 				<Stat label="Per beat" value={`+${fmt(meters.incomeC, 2)}`} />
-				<Stat label="Current" value={`${fmt(meters.totalAmps, 2)} A`} />
+				<Stat label="Current" value={`${fmt(solution.totalAmps, 2)} A`} />
 				<Stat
 					label="Delivered"
-					value={`${fmt(meters.demandW)} / ${fmt(meters.maxW, 0)} W`}
+					value={`${fmt(solution.demandW)} / ${fmt(sourceMaxWatts(openVolts, ohms), 0)} W`}
 				/>
 				<Stat label="Source Ω" value={`${fmt(ohms, 2)} Ω`} />
 				<Stat
 					label="Heat"
-					value={`${fmt(meters.lossW + meters.sourceLossW, 2)} W`}
+					value={`${fmt(solution.lossW + solution.sourceLossW, 2)} W`}
 				/>
 				<Stat
 					label="Battery"
@@ -124,10 +129,10 @@ export default function HUD() {
 
 			<div className="flowy-hud-row flowy-hud-actions">
 				<button
-					className={`flowy-btn${mode === 'build' ? ' active' : ''}`}
-					onClick={() => setMode(mode === 'build' ? 'select' : 'build')}
+					className={`flowy-btn${mode === 'add' ? ' active' : ''}`}
+					onClick={() => setMode(mode === 'add' ? 'select' : 'add')}
 				>
-					{mode === 'build' ? 'Building…' : 'Build connection'}
+					{mode === 'add' ? 'Done adding' : 'Add connection'}
 				</button>
 
 				{(Object.keys(UPGRADE_LABELS) as UpgradeKind[]).map((kind) => {
@@ -160,9 +165,9 @@ export default function HUD() {
 						: sag >= SAG_SEVERE
 							? `The bus is down to ${fmt(terminal, 1)} V. Taps earn in proportion to what reaches them, and the far grid is falling below its ${6} V wake threshold.`
 							: sag >= SAG_BROWNOUT
-								? `Browning out — ${fmt(meters.totalAmps, 2)} A through ${fmt(ohms, 2)} Ω is costing ${fmt(openVolts - terminal, 1)} V at the terminal.`
-								: mode === 'build'
-									? `Click a node, then another within ${MAX_LINK_DIST}u. Esc cancels.`
+								? `Browning out — ${fmt(solution.totalAmps, 2)} A through ${fmt(ohms, 2)} Ω is costing ${fmt(openVolts - terminal, 1)} V at the terminal.`
+								: mode === 'add'
+									? `Every connection within ${MAX_LINK_DIST}u is on offer, priced at its midpoint. Tap one, then confirm.`
 									: 'Drag to pan, scroll to zoom, h to return to the source.')}
 			</div>
 		</div>

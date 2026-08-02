@@ -11,7 +11,7 @@ import {
 	sagSeverity,
 } from './config';
 import type { Solution } from './sim';
-import type { FlowyEdge } from './world';
+import type { FlowyEdge, GhostLink } from './world';
 import { getNode, nodesInRect } from './world';
 
 export interface Camera {
@@ -26,11 +26,12 @@ export interface RenderInput {
 	camera: Camera;
 	edges: Record<string, FlowyEdge>;
 	solution: Solution;
-	selection: { type: 'node' | 'edge'; id: string } | null;
+	selection: { type: 'node' | 'edge' | 'ghost'; id: string } | null;
 	hoverNode: string | null;
-	linkFrom: string | null;
-	/** Cursor in world space, for drawing the in-progress connection. */
-	pointer: { x: number; y: number } | null;
+	/** Connections on offer, drawn only while in add mode. */
+	ghosts: GhostLink[];
+	/** Whether the player can afford each ghost, for the offer styling. */
+	coins: number;
 	tripped: boolean;
 	/** Fraction of open-circuit voltage the source has lost, 0..1. */
 	sag: number;
@@ -129,7 +130,7 @@ export function draw(
 		drawEdge(ctx, cam, w, h, edge, scene);
 	}
 
-	drawPendingLink(ctx, cam, w, h, scene);
+	drawGhosts(ctx, cam, w, h, scene, x0, y0, x1, y1);
 
 	for (const node of nodesInRect(x0 - 1, y0 - 1, x1 + 1, y1 + 1)) {
 		drawNode(ctx, cam, w, h, node.id, scene);
@@ -378,16 +379,6 @@ function drawNode(
 		ctx.stroke();
 	}
 
-	if (input.linkFrom === id) {
-		ctx.strokeStyle = COLORS.positive;
-		ctx.lineWidth = 2;
-		ctx.setLineDash([4, 4]);
-		ctx.beginPath();
-		ctx.arc(sx, sy, r * 2.6, 0, Math.PI * 2);
-		ctx.stroke();
-		ctx.setLineDash([]);
-	}
-
 	// Live nodes report their potential. Dark ones name themselves only if they
 	// are worth walking towards — labelling every relay just makes noise.
 	const label = energized
@@ -404,32 +395,113 @@ function drawNode(
 	}
 }
 
-/** Rubber-band line from the pending endpoint to the cursor. */
-function drawPendingLink(
+/** Radius of a ghost's tap target. Generous, because this is played on phones. */
+export const ghostHandleRadius = (cam: Camera) => Math.max(9, cam.zoom * 0.15);
+
+/** Screen position of a ghost's handle — shared with the canvas hit-test. */
+export function ghostHandle(
+	ghost: GhostLink,
+	cam: Camera,
+	w: number,
+	h: number,
+): [number, number] | null {
+	const from = getNode(ghost.from);
+	const to = getNode(ghost.to);
+	if (!from || !to) return null;
+	const [ax, ay] = worldToScreen(from.x, from.y, cam, w, h);
+	const [bx, by] = worldToScreen(to.x, to.y, cam, w, h);
+	return [(ax + bx) / 2, (ay + by) / 2];
+}
+
+/**
+ * The connections on offer: a dashed run with a tappable handle at its
+ * midpoint carrying the price. Direction is baked in by whoever built the
+ * offer, and the arrow says which way it will feed, so there is no way to lay
+ * a run backwards by clicking the endpoints in the wrong order.
+ */
+function drawGhosts(
 	ctx: CanvasRenderingContext2D,
 	cam: Camera,
 	w: number,
 	h: number,
 	input: Scene,
+	x0: number,
+	y0: number,
+	x1: number,
+	y1: number,
 ) {
-	if (!input.linkFrom || !input.pointer) return;
-	const from = getNode(input.linkFrom);
-	if (!from) return;
-	const target = input.hoverNode ? getNode(input.hoverNode) : null;
-	const [ax, ay] = worldToScreen(from.x, from.y, cam, w, h);
-	const [bx, by] = target
-		? worldToScreen(target.x, target.y, cam, w, h)
-		: worldToScreen(input.pointer.x, input.pointer.y, cam, w, h);
+	if (input.ghosts.length === 0) return;
+	const r = ghostHandleRadius(cam);
 
-	ctx.save();
-	ctx.setLineDash([7, 6]);
-	ctx.lineWidth = 2;
-	ctx.strokeStyle = withAlpha(COLORS.select, 0.6);
-	ctx.beginPath();
-	ctx.moveTo(ax, ay);
-	ctx.lineTo(bx, by);
-	ctx.stroke();
-	ctx.restore();
+	for (const ghost of input.ghosts) {
+		const from = getNode(ghost.from);
+		const to = getNode(ghost.to);
+		if (!from || !to) continue;
+		// Cull anything wholly outside the view.
+		if (
+			Math.max(from.x, to.x) < x0 - 1 ||
+			Math.min(from.x, to.x) > x1 + 1 ||
+			Math.max(from.y, to.y) < y0 - 1 ||
+			Math.min(from.y, to.y) > y1 + 1
+		)
+			continue;
+
+		const selected =
+			input.selection?.type === 'ghost' && input.selection.id === ghost.id;
+		const affordable = input.coins >= ghost.cost;
+		const tint = selected
+			? COLORS.select
+			: affordable
+				? COLORS.ghost
+				: COLORS.ghostPoor;
+
+		const [ax, ay] = worldToScreen(from.x, from.y, cam, w, h);
+		const [bx, by] = worldToScreen(to.x, to.y, cam, w, h);
+
+		ctx.save();
+		ctx.setLineDash(selected ? [] : [5, 5]);
+		ctx.lineWidth = selected ? 2.6 : 1.3;
+		ctx.strokeStyle = withAlpha(tint, selected ? 0.95 : affordable ? 0.4 : 0.22);
+		ctx.beginPath();
+		ctx.moveTo(ax, ay);
+		ctx.lineTo(bx, by);
+		ctx.stroke();
+		ctx.restore();
+
+		const mx = (ax + bx) / 2;
+		const my = (ay + by) / 2;
+
+		// The handle. A selected offer shows an arrow instead of a price, so the
+		// direction it will feed is unmistakable at the moment of confirming.
+		ctx.save();
+		ctx.fillStyle = withAlpha(COLORS.background, 0.9);
+		ctx.beginPath();
+		ctx.arc(mx, my, r, 0, Math.PI * 2);
+		ctx.fill();
+		ctx.lineWidth = selected ? 2.4 : 1.4;
+		ctx.strokeStyle = withAlpha(tint, selected ? 1 : affordable ? 0.7 : 0.4);
+		ctx.stroke();
+
+		if (selected) {
+			const angle = Math.atan2(by - ay, bx - ax);
+			ctx.translate(mx, my);
+			ctx.rotate(angle);
+			ctx.fillStyle = tint;
+			ctx.beginPath();
+			ctx.moveTo(r * 0.62, 0);
+			ctx.lineTo(-r * 0.42, r * 0.46);
+			ctx.lineTo(-r * 0.42, -r * 0.46);
+			ctx.closePath();
+			ctx.fill();
+		} else if (cam.zoom >= 34) {
+			ctx.fillStyle = withAlpha(tint, affordable ? 0.95 : 0.5);
+			ctx.font = `600 ${Math.max(9, r * 0.95)}px ui-monospace, monospace`;
+			ctx.textAlign = 'center';
+			ctx.textBaseline = 'middle';
+			ctx.fillText(String(ghost.cost), mx, my + 0.5);
+		}
+		ctx.restore();
+	}
 }
 
 /**

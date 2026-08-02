@@ -2,16 +2,21 @@ import { useCallback, useEffect, useRef } from 'react';
 import { CAMERA } from './config';
 import {
 	draw,
+	ghostHandle,
+	ghostHandleRadius,
 	nodeRadius,
 	screenToWorld,
 	worldToScreen,
 	type Camera,
 } from './render';
 import { useFlowy } from './store';
-import { getNode, nodesInRect } from './world';
+import { getNode, nodesInRect, type GhostLink } from './world';
 
 /** A drag shorter than this many pixels counts as a click, not a pan. */
 const CLICK_SLOP = 5;
+
+/** Stable empty array, so the render input does not churn every frame. */
+const EMPTY_GHOSTS: GhostLink[] = [];
 
 /**
  * The grid view. Camera and pointer state live in refs rather than React state:
@@ -45,6 +50,29 @@ export default function GridCanvas() {
 				if (d < bestDist) {
 					bestDist = d;
 					best = node.id;
+				}
+			}
+			return best;
+		},
+		[],
+	);
+
+	/** Nearest offered connection whose handle is under a screen point. */
+	const pickGhost = useCallback(
+		(sx: number, sy: number, w: number, h: number): string | null => {
+			const cam = cameraRef.current;
+			const { mode, ghosts } = useFlowy.getState();
+			if (mode !== 'add') return null;
+			const grab = ghostHandleRadius(cam) + 4;
+			let best: string | null = null;
+			let bestDist = grab;
+			for (const ghost of ghosts) {
+				const at = ghostHandle(ghost, cam, w, h);
+				if (!at) continue;
+				const d = Math.hypot(sx - at[0], sy - at[1]);
+				if (d < bestDist) {
+					bestDist = d;
+					best = ghost.id;
 				}
 			}
 			return best;
@@ -112,8 +140,8 @@ export default function GridCanvas() {
 				solution: s.solution,
 				selection: s.selection,
 				hoverNode: hoverRef.current,
-				linkFrom: s.linkFrom,
-				pointer: pointerRef.current,
+				ghosts: s.mode === 'add' ? s.ghosts : EMPTY_GHOSTS,
+				coins: s.coins,
 				tripped: s.tripped,
 				sag: s.solution.sag,
 				timeMs: now - start,
@@ -176,6 +204,13 @@ export default function GridCanvas() {
 		if (drag?.moved) return; // that was a pan
 
 		const store = useFlowy.getState();
+		// Offers sit on top: while shopping, their handles win over what is under
+		// them, otherwise a ghost laid across a node would be unpickable.
+		const ghost = pickGhost(x, y, w, h);
+		if (ghost) {
+			store.select({ type: 'ghost', id: ghost });
+			return;
+		}
 		const node = pickNode(x, y, w, h);
 		if (node) {
 			store.tapNode(node);
@@ -186,9 +221,7 @@ export default function GridCanvas() {
 			store.select({ type: 'edge', id: edge });
 			return;
 		}
-		// Empty space: drop the selection, and abandon a half-built connection.
 		store.select(null);
-		if (store.linkFrom) store.cancelLink();
 	};
 
 	const onPointerLeave = () => {
@@ -212,18 +245,17 @@ export default function GridCanvas() {
 		cam.y += wy - ny;
 	};
 
-	// Escape abandons a pending connection; Home flies back to the source.
+	// Escape leaves add mode; Home flies back to the source.
 	useEffect(() => {
 		const onKey = (e: KeyboardEvent) => {
-			if (e.key === 'Escape') useFlowy.getState().cancelLink();
+			const s = useFlowy.getState();
+			if (e.key === 'Escape' && s.mode === 'add') s.setMode('select');
 			if (e.key === 'Home' || e.key === 'h') {
 				cameraRef.current.x = 0.5;
 				cameraRef.current.y = 0.5;
 			}
-			if (e.key === 'b') {
-				const s = useFlowy.getState();
-				s.setMode(s.mode === 'build' ? 'select' : 'build');
-			}
+			if (e.key === 'a') s.setMode(s.mode === 'add' ? 'select' : 'add');
+			if (e.key === 'Enter' && s.selection?.type === 'ghost') s.confirmGhost();
 		};
 		window.addEventListener('keydown', onKey);
 		return () => window.removeEventListener('keydown', onKey);
