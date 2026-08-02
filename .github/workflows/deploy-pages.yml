@@ -2,12 +2,15 @@ name: Deploy to GitHub Pages
 
 on:
   # Publish on every push to main.
+  #
+  # Only main. The github-pages environment refuses deployments from any other
+  # ref, so a workflow triggered by a work-branch push builds fine and then
+  # fails at the deploy step. Work branches instead ask this workflow to run
+  # against main (see refresh-previews.yml), which rebuilds main and every
+  # preview together — one site, one deployment, live content untouched.
   push:
-    # Pushing a work branch republishes the site with that branch's preview
-    # refreshed. Pages serves a single site, so every deploy rebuilds main and
-    # all previews together — a preview push never replaces the live site.
-    branches: [main, 'claude/**']
-  # Allow manual runs from the Actions tab.
+    branches: [main]
+  # Allow manual runs from the Actions tab, and the dispatch from a work branch.
   workflow_dispatch:
 
 # Permissions required by actions/deploy-pages.
