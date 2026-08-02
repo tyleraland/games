@@ -112,6 +112,19 @@ interface FlowyState {
 	cameraCue: { id: number; node: string; force: boolean } | null;
 	/** Transient message shown under the HUD (bad purchase, blackout, …). */
 	notice: string | null;
+	/**
+	 * Set when the network is lit but earning nothing — the one state that looks
+	 * entirely healthy and is not. Null whenever anything is paying out.
+	 */
+	stuck: string | null;
+	/**
+	 * How many beats the current notice has been on screen, and the text it was
+	 * counting. A build confirmation is worth a beat or two and then it is just
+	 * noise — and while one sits there it masks the stuck advice underneath it,
+	 * which is the message that actually matters.
+	 */
+	noticeAge: number;
+	noticeSeen: string | null;
 
 	tick: () => void;
 	/** Send the camera back to the source. */
@@ -197,6 +210,80 @@ function buildOffers(
 }
 
 /**
+ * The cheapest run anywhere on the lit network that would actually start
+ * earning, or null if none exists in reach.
+ *
+ * Only consulted when the network is lit but earning nothing, which is the one
+ * state a player can sit in indefinitely with everything looking healthy —
+ * volts nominal, current flowing, every node glowing — and no indication that
+ * they have wired a grid of conduit with nothing on the end of it that pays.
+ */
+function cheapestEarner(
+	edges: Record<string, FlowyEdge>,
+	solution: Solution,
+	levels: Record<UpgradeKind, number>,
+	tripped: boolean,
+): { from: string; to: string; cost: number; gain: number } | null {
+	const rankOf = new Map<string, number>();
+	solution.order.forEach((id, i) => rankOf.set(id, i));
+	const base = incomeOf(solution);
+	let best: { from: string; to: string; cost: number; gain: number } | null = null;
+
+	for (const anchor of solution.order.slice(0, 40)) {
+		for (const offer of offersFrom(anchor, edges, (id) => rankOf.get(id) ?? Infinity)) {
+			if (offer.outward && !solution.energized.has(offer.from)) continue;
+			// Prune on price before paying for a solve — we only want the cheapest.
+			if (best && offer.cost >= best.cost) continue;
+			const from = getNode(offer.from);
+			const to = getNode(offer.to);
+			if (!from || !to) continue;
+			const trial = { ...edges, [offer.id]: makeEdge(from, to) };
+			const gain = incomeOf(resolve(trial, levels, tripped)) - base;
+			if (gain > 0.005) {
+				best = { from: offer.from, to: offer.to, cost: offer.cost, gain };
+			}
+		}
+	}
+	return best;
+}
+
+/** Beats a notice stays up before it stops being news and starts being clutter. */
+const NOTICE_BEATS = 4;
+
+/** Age the current notice by one beat, retiring it once it has had its moment. */
+function expireNotice(
+	notice: string | null,
+	seen: string | null,
+	age: number,
+): { notice: string | null; noticeSeen: string | null; noticeAge: number } {
+	if (notice === null) return { notice: null, noticeSeen: null, noticeAge: 0 };
+	const next = notice === seen ? age + 1 : 0;
+	if (next >= NOTICE_BEATS)
+		return { notice: null, noticeSeen: null, noticeAge: 0 };
+	return { notice, noticeSeen: notice, noticeAge: next };
+}
+
+/** Where to point a player whose network is lit but earning nothing. */
+function stuckAdvice(
+	edges: Record<string, FlowyEdge>,
+	solution: Solution,
+	levels: Record<UpgradeKind, number>,
+	tripped: boolean,
+	coins: number,
+): string | null {
+	if (tripped || Object.keys(edges).length === 0) return null;
+	const best = cheapestEarner(edges, solution, levels, tripped);
+	const why = 'Nothing is earning — only taps pay out, and none are wired yet.';
+	if (!best) return `${why} None are in reach; pan out to find one.`;
+	const at = getNode(best.to);
+	const where = at ? `(${at.x}, ${at.y})` : 'a tap';
+	if (coins < best.cost) {
+		return `${why} The nearest is the tap at ${where} for ${best.cost}c — you have ${Math.floor(coins)}.`;
+	}
+	return `${why} Cheapest: the tap at ${where}, ${best.cost}c for +${best.gain.toFixed(2)} a beat.`;
+}
+
+/**
  * Re-run the solve against the current graph, upgrades and battery support.
  * A tripped breaker is an open circuit: the source sits at open-circuit volts
  * with nothing drawing on it, and the network sees nothing at all.
@@ -240,6 +327,9 @@ export const useFlowy = create<FlowyState>((set, get) => ({
 	lastBuilt: null,
 	cameraCue: null,
 	notice: null,
+	stuck: null,
+	noticeAge: 0,
+	noticeSeen: null,
 
 	/* ---------------------------------------------------------------- */
 	/* The beat                                                          */
@@ -317,6 +407,13 @@ export const useFlowy = create<FlowyState>((set, get) => ({
 			coins: s.coins + incomeC,
 			stored,
 			solution,
+			// Only worth the scan when nothing is paying out; by definition that
+			// means the network is still small.
+			stuck:
+				incomeC === 0
+					? stuckAdvice(s.edges, solution, s.levels, s.tripped, s.coins)
+					: null,
+			...expireNotice(s.notice, s.noticeSeen, s.noticeAge),
 			meters: {
 				openVolts,
 				terminalVolts: solution.terminalVolts,

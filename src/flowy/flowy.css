@@ -686,3 +686,11 @@
 	letter-spacing: 0;
 	font-variant-numeric: tabular-nums;
 }
+
+/* A lit network earning nothing looks entirely healthy, so the line that says
+   otherwise has to carry more weight than the ordinary hints it sits among. */
+.flowy-notice.stuck {
+	color: #e8c68a;
+	opacity: 1;
+	font-weight: 600;
+}

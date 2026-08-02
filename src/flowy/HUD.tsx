@@ -54,6 +54,7 @@ export default function HUD() {
 	const offers = useFlowy((s) => s.offers);
 	const history = useFlowy((s) => s.history);
 	const notice = useFlowy((s) => s.notice);
+	const stuck = useFlowy((s) => s.stuck);
 	const buy = useFlowy((s) => s.buy);
 	const undo = useFlowy((s) => s.undo);
 	const goHome = useFlowy((s) => s.goHome);
@@ -171,8 +172,9 @@ export default function HUD() {
 				)}
 			</div>
 
-			<div className="flowy-notice">
+			<div className={`flowy-notice${!notice && stuck ? ' stuck' : ''}`}>
 				{notice ??
+					stuck ??
 					(tripped
 						? `Breaker open — the bus fell past −${SAG_TRIP * 100}% and the protection dropped the load.`
 						: sag >= SAG_SEVERE
