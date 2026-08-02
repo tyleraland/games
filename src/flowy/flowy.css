@@ -249,10 +249,15 @@
 }
 
 /* Undo is the safety net that lets a purchase happen without a confirm step,
-   so it is always present and always in the same place. */
-.flowy-btn.undo:not(:disabled) {
+   so it is always present and always in the same place. It stays pressable with
+   nothing to undo — it answers instead of sitting there greyed and mute. */
+.flowy-btn.undo.armed {
 	border-color: rgba(111, 214, 196, 0.5);
 	color: #6fd6c4;
+}
+
+.flowy-btn.undo:not(.armed) {
+	opacity: 0.55;
 }
 
 .flowy-btn.primary {
@@ -342,6 +347,24 @@
 	font-size: 12.5px;
 	line-height: 1.5;
 	color: #a8e5d9;
+}
+
+.flowy-wiring strong {
+	color: #ffe08a;
+	font-weight: 700;
+}
+
+/* Wiring outward from an unlit node spends real coins on wire that carries
+   nothing, so the panel stops looking encouraging about it. */
+.flowy-wiring.dark {
+	background: rgba(232, 163, 61, 0.1);
+	border-color: rgba(232, 163, 61, 0.3);
+	color: #e8c68a;
+}
+
+.flowy-wiring.dark em {
+	font-style: normal;
+	font-weight: 700;
 }
 
 .flowy-blurb {
@@ -563,9 +586,16 @@
 		overflow-y: auto;
 	}
 
+	/* Only the top row runs under the "All games" link, so only the top row pays
+	   for it. The action row needs every pixel it can get — it holds five
+	   buttons and used to lose Capacity and Battery off the right edge. */
 	.flowy-hud {
 		padding: 8px 10px 6px;
-		padding-right: 96px;
+		padding-right: 10px;
+	}
+
+	.flowy-hud-row:first-child {
+		padding-right: 92px;
 	}
 
 	.flowy-hud-row {
@@ -573,6 +603,16 @@
 		overflow-x: auto;
 		gap: 0 16px;
 		scrollbar-width: none;
+	}
+
+	/* Fade the right edge so it is visible that the row keeps going. */
+	.flowy-hud-actions {
+		-webkit-mask-image: linear-gradient(
+			to right,
+			#000 calc(100% - 24px),
+			transparent
+		);
+		mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent);
 	}
 
 	.flowy-hud-row::-webkit-scrollbar {

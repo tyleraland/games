@@ -41,6 +41,8 @@ export interface RenderInput {
 	sag: number;
 	/** The run just bought, so the surge can be painted along it. */
 	lastBuilt: { id: string; at: number } | null;
+	/** Pixels of canvas bottom hidden behind the inspector sheet. */
+	insetBottom: number;
 	timeMs: number;
 	/** The same clock `lastBuilt.at` was stamped from. */
 	nowMs: number;
@@ -155,7 +157,7 @@ export function draw(
 	drawBuildSurge(ctx, cam, w, h, scene);
 
 	// Panning far afield is the whole exploration loop, so keep a way home.
-	drawSourceCompass(ctx, cam, w, h);
+	drawSourceCompass(ctx, cam, w, h, input.insetBottom);
 
 	drawSagVignette(ctx, w, h, scene);
 }
@@ -529,21 +531,46 @@ function drawOfferRings(
 	// Two passes: every ring, then every price. Offers sit a single grid unit
 	// apart at times, and a ring painted later must not clip the plate of the
 	// offer next to it — the price is the one thing that has to stay readable.
+	const anchorNode = input.anchor ? getNode(input.anchor) : null;
+	const [ax, ay] = anchorNode
+		? worldToScreen(anchorNode.x, anchorNode.y, cam, w, h)
+		: [w / 2, h / 2];
+
 	const onScreen = [];
 	for (const offer of input.offers) {
 		const target = getNode(offer.target);
 		if (!target) continue;
 		const [sx, sy] = worldToScreen(target.x, target.y, cam, w, h);
 		if (sx < -ring || sy < -ring || sx > w + ring || sy > h + ring) continue;
-		onScreen.push({ offer, sx, sy, affordable: input.coins >= offer.cost });
+		// Price plates sit on the far side of the ring from the anchor, so they
+		// fan out like petals instead of stacking above one another. Zoomed out,
+		// rings are floored at a thumb's width and end up closer together than
+		// the nodes are, and a column of plates lands on the ring below it.
+		const dx = sx - ax;
+		const dy = sy - ay;
+		const len = Math.hypot(dx, dy) || 1;
+		onScreen.push({
+			offer,
+			sx,
+			sy,
+			ux: dx / len,
+			uy: dy / len,
+			affordable: input.coins >= offer.cost,
+		});
 	}
 
-	for (const { sx, sy, affordable } of onScreen) {
-		const tint = affordable ? COLORS.offer : COLORS.offerPoor;
+	for (const { offer, sx, sy, affordable } of onScreen) {
+		const tint = affordable && !offer.dead ? COLORS.offer : COLORS.offerPoor;
 		ctx.save();
-		ctx.lineWidth = affordable ? 2.2 : 1.4;
-		ctx.strokeStyle = withAlpha(tint, affordable ? 0.45 + 0.45 * breath : 0.3);
-		if (affordable) {
+		// A run out of an unlit node is drawn broken: it is buyable, and the price
+		// is real, but it will not carry a thing until something upstream lights.
+		if (offer.dead) ctx.setLineDash([5, 5]);
+		ctx.lineWidth = affordable && !offer.dead ? 2.2 : 1.4;
+		ctx.strokeStyle = withAlpha(
+			tint,
+			affordable && !offer.dead ? 0.45 + 0.45 * breath : 0.32,
+		);
+		if (affordable && !offer.dead) {
 			ctx.shadowColor = tint;
 			ctx.shadowBlur = 7 * breath;
 		}
@@ -555,29 +582,50 @@ function drawOfferRings(
 
 	if (cam.zoom < 30) return;
 
-	for (const { offer, sx, sy, affordable } of onScreen) {
-		const tint = affordable ? COLORS.offer : COLORS.offerPoor;
-		// The price rides above the ring on its own plate, so it stays legible
+	for (const { offer, sx, sy, ux, uy, affordable } of onScreen) {
+		const tint = affordable && !offer.dead ? COLORS.offer : COLORS.offerPoor;
+		// The price rides beyond the ring on its own plate, so it stays legible
 		// over the grid, over a wire, or over a lit node's glow.
+		//
+		// What the run would *earn* rides on the same plate. Without it the board
+		// is a wall of prices with nothing to say which one pays, and a player can
+		// spend five runs on relays and hubs for +0.00 a beat. The figure is the
+		// change in the whole network's income, so it already contains the sag the
+		// new load inflicts on every tap that is already lit.
 		const label = `${offer.cost}c`;
+		const pays = offer.gain > 0.005;
+		const gain = pays ? ` +${offer.gain.toFixed(2)}` : '';
 		const font = Math.max(10, Math.min(13, cam.zoom * 0.21));
 		ctx.save();
-		ctx.font = `700 ${font}px ui-monospace, monospace`;
-		ctx.textAlign = 'center';
+		ctx.textAlign = 'left';
 		ctx.textBaseline = 'middle';
+		ctx.font = `700 ${font}px ui-monospace, monospace`;
+		const costW = ctx.measureText(label).width;
+		const gainW = gain ? ctx.measureText(gain).width : 0;
 		const padX = 5;
-		const tw = ctx.measureText(label).width + padX * 2;
+		const tw = costW + gainW + padX * 2;
 		const th = font + 5;
-		const py = sy - ring - th * 0.62;
+		const out = ring + th * 0.66;
+		// Keep the plate on screen even when its ring is hard against an edge.
+		const px = Math.min(w - tw / 2 - 2, Math.max(tw / 2 + 2, sx + ux * out));
+		const py = Math.min(
+			h - input.insetBottom - th / 2 - 2,
+			Math.max(th / 2 + 2, sy + uy * out),
+		);
 		ctx.fillStyle = withAlpha(COLORS.background, 0.88);
 		ctx.beginPath();
-		ctx.roundRect(sx - tw / 2, py - th / 2, tw, th, th / 2);
+		ctx.roundRect(px - tw / 2, py - th / 2, tw, th, th / 2);
 		ctx.fill();
-		ctx.strokeStyle = withAlpha(tint, affordable ? 0.55 : 0.3);
+		ctx.strokeStyle = withAlpha(pays ? COLORS.anchor : tint, pays ? 0.7 : 0.35);
 		ctx.lineWidth = 1;
 		ctx.stroke();
 		ctx.fillStyle = withAlpha(tint, affordable ? 1 : 0.55);
-		ctx.fillText(label, sx, py + 0.5);
+		ctx.fillText(label, px - tw / 2 + padX, py + 0.5);
+		if (gain) {
+			// Gold, like the coin counter it feeds.
+			ctx.fillStyle = withAlpha(COLORS.anchor, affordable ? 1 : 0.55);
+			ctx.fillText(gain, px - tw / 2 + padX + costW, py + 0.5);
+		}
 		ctx.restore();
 	}
 }
@@ -682,22 +730,40 @@ function drawPulses(
 	}
 }
 
-/** Arrow at the screen edge pointing home when the source is off-view. */
+/**
+ * Arrow at the screen edge pointing home when the source is off-view.
+ *
+ * It has to be pinned to the edge of the *viewport*, not to a circle inscribed
+ * in it: on a tall phone `min(w, h) / 2` puts the marker halfway up the middle
+ * of the board, where it reads as a game object rather than as a signpost. So
+ * the direction is cast against the inset rectangle instead, and the bottom
+ * edge stops short of the sheet lying over the canvas.
+ */
 function drawSourceCompass(
 	ctx: CanvasRenderingContext2D,
 	cam: Camera,
 	w: number,
 	h: number,
+	insetBottom: number,
 ) {
-	const [sx, sy] = worldToScreen(0, 0, cam, w, h);
 	const margin = 26;
-	if (sx > margin && sx < w - margin && sy > margin && sy < h - margin) return;
+	const bottom = h - insetBottom;
+	const [sx, sy] = worldToScreen(0, 0, cam, w, h);
+	if (sx > margin && sx < w - margin && sy > margin && sy < bottom - margin)
+		return;
 
 	const cx = w / 2;
-	const cy = h / 2;
+	const cy = bottom / 2;
 	const angle = Math.atan2(sy - cy, sx - cx);
-	const px = cx + Math.cos(angle) * (Math.min(w, h) / 2 - margin);
-	const py = cy + Math.sin(angle) * (Math.min(w, h) / 2 - margin);
+	const dx = Math.cos(angle);
+	const dy = Math.sin(angle);
+	// Distance along the ray until it meets whichever inset edge comes first.
+	const reach = Math.min(
+		Math.abs((w / 2 - margin) / (Math.abs(dx) < 1e-6 ? 1e-6 : dx)),
+		Math.abs((bottom / 2 - margin) / (Math.abs(dy) < 1e-6 ? 1e-6 : dy)),
+	);
+	const px = cx + dx * reach;
+	const py = cy + dy * reach;
 
 	ctx.save();
 	ctx.translate(px, py);
@@ -709,6 +775,17 @@ function drawSourceCompass(
 	ctx.lineTo(-8, -7);
 	ctx.closePath();
 	ctx.fill();
+	ctx.restore();
+
+	// Say what it is. Unlabelled, it was being read as a piece of the board.
+	ctx.save();
+	ctx.fillStyle = withAlpha('#ffe08a', 0.75);
+	ctx.font = '600 10px system-ui, sans-serif';
+	ctx.textAlign = 'center';
+	ctx.textBaseline = 'middle';
+	const lx = Math.min(w - 24, Math.max(24, px - dx * 34));
+	const ly = Math.min(bottom - 10, Math.max(10, py - dy * 34));
+	ctx.fillText('source', lx, ly);
 	ctx.restore();
 }
 

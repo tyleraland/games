@@ -84,7 +84,14 @@ export const sagSeverity = (sag: number) =>
 /* Economy                                                             */
 /* ------------------------------------------------------------------ */
 
-export const START_COINS = 80;
+/**
+ * Enough to fund the first four or five runs outright. At 80 the opening was
+ * two builds and then 8–25 seconds of watching a single tap trickle before the
+ * next one was affordable, which is the worst part of the game sitting at the
+ * front of it. This shortens the cold start without touching the income curve,
+ * the sag economy or any later price.
+ */
+export const START_COINS = 120;
 
 /**
  * Connections cost more than linearly in length, so reaching a distant node is

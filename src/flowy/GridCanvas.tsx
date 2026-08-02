@@ -34,6 +34,19 @@ export default function GridCanvas() {
 		moved: boolean;
 	} | null>(null);
 
+	/** Every pointer currently down, so two of them can be read as a pinch. */
+	const pointersRef = useRef(new Map<number, { x: number; y: number }>());
+	/** Live pinch: the last span and midpoint, updated each move. */
+	const pinchRef = useRef<{ dist: number; mx: number; my: number } | null>(null);
+	/** Set once a gesture has become a pinch, so lifting fingers never taps. */
+	const suppressTapRef = useRef(false);
+	/** Where the camera is easing to, or null when it is under manual control. */
+	const glideRef = useRef<Camera | null>(null);
+	/** The last camera request consumed, so each one is acted on exactly once. */
+	const cueRef = useRef(0);
+	/** How much of the canvas bottom the inspector sheet is covering. */
+	const insetRef = useRef(0);
+
 	/** Nearest node to a screen point, within its drawn radius. */
 	const pickNode = useCallback(
 		(sx: number, sy: number, w: number, h: number): string | null => {
@@ -112,6 +125,80 @@ export default function GridCanvas() {
 		[],
 	);
 
+	/**
+	 * Work out where the camera should sit so that a node and everything it is
+	 * offering are both on screen, and start a glide there.
+	 *
+	 * MAX_LINK_DIST is 3 units and a phone shows roughly seven across, so an
+	 * anchor's own ring cluster falls off the edge within a few builds. Without
+	 * this the sheet cheerfully reports "6 of 8 runs affordable" over a board
+	 * with no rings on it at all.
+	 */
+	const planCamera = useCallback(
+		(node: string, force: boolean, w: number, h: number) => {
+			const centre = getNode(node);
+			if (!centre) return;
+			const cam = cameraRef.current;
+			const { offers, selection } = useFlowy.getState();
+
+			let minX = centre.x;
+			let maxX = centre.x;
+			let minY = centre.y;
+			let maxY = centre.y;
+			// Only fold in the offers when they actually belong to this node.
+			if (anchorOf(selection) === node) {
+				for (const offer of offers) {
+					const target = getNode(offer.target);
+					if (!target) continue;
+					minX = Math.min(minX, target.x);
+					maxX = Math.max(maxX, target.x);
+					minY = Math.min(minY, target.y);
+					maxY = Math.max(maxY, target.y);
+				}
+			}
+			// Room for the ring and its price plate, which sit outside the node.
+			const pad = 0.75;
+			minX -= pad;
+			maxX += pad;
+			minY -= pad;
+			maxY += pad;
+
+			// The sheet lies over the bottom of the canvas, so the part actually
+			// worth aiming at is shorter than the canvas is.
+			const safeH = Math.max(140, h - insetRef.current);
+			const [vx0, vy0] = screenToWorld(0, 0, cam, w, h);
+			const [vx1, vy1] = screenToWorld(w, safeH, cam, w, h);
+			const visible =
+				minX >= vx0 && maxX <= vx1 && minY >= vy0 && maxY <= vy1;
+			if (visible && !force) return;
+
+			// Only ever pull back to fit — yanking the zoom in on every build would
+			// be far more disorienting than the odd ring near the edge.
+			const fit = Math.min(w / (maxX - minX), safeH / (maxY - minY));
+			const zoom = Math.max(
+				CAMERA.minZoom,
+				Math.min(cam.zoom, Math.min(CAMERA.maxZoom, fit)),
+			);
+			// Put the cluster's centre in the middle of the *safe* box, which means
+			// biasing the camera so it rides above the sheet.
+			glideRef.current = {
+				x: (minX + maxX) / 2,
+				y: (minY + maxY) / 2 + (h - safeH) / (2 * zoom),
+				zoom,
+			};
+		},
+		[],
+	);
+
+	// Dev-only handle on the live camera, so an integration check can assert what
+	// a pinch or a glide actually did. Mirrors `window.flowy`; stripped from
+	// production by the `import.meta.env.DEV` guard.
+	useEffect(() => {
+		if (!import.meta.env.DEV) return;
+		(window as unknown as { flowyCamera?: Camera }).flowyCamera =
+			cameraRef.current;
+	}, []);
+
 	/* --- Render loop --- */
 	useEffect(() => {
 		const canvas = canvasRef.current;
@@ -120,6 +207,7 @@ export default function GridCanvas() {
 		if (!ctx) return;
 
 		let frame = 0;
+		let frameCount = 0;
 		const start = performance.now();
 
 		const render = (now: number) => {
@@ -134,6 +222,48 @@ export default function GridCanvas() {
 			ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
 			const s = useFlowy.getState();
+
+			// How much of the board the sheet is sitting on. Only counts when it
+			// spans the canvas and overlaps it — on a wide screen the inspector is
+			// a sibling beside the canvas and covers nothing.
+			if (frameCount++ % 15 === 0) {
+				const sheet = document.querySelector('.flowy-sheet');
+				const sr = sheet?.getBoundingClientRect();
+				insetRef.current =
+					sr &&
+					sr.width > 0 &&
+					sr.left <= rect.left + 1 &&
+					sr.right >= rect.right - 1 &&
+					sr.top > rect.top
+						? Math.max(0, rect.bottom - sr.top)
+						: 0;
+			}
+
+			// Act on a camera request once, then glide rather than jump.
+			if (s.cameraCue && s.cameraCue.id !== cueRef.current) {
+				cueRef.current = s.cameraCue.id;
+				planCamera(s.cameraCue.node, s.cameraCue.force, w, h);
+			}
+			const glide = glideRef.current;
+			if (glide) {
+				const cam = cameraRef.current;
+				cam.x += (glide.x - cam.x) * 0.16;
+				cam.y += (glide.y - cam.y) * 0.16;
+				cam.zoom += (glide.zoom - cam.zoom) * 0.16;
+				if (
+					Math.abs(glide.x - cam.x) < 0.004 &&
+					Math.abs(glide.y - cam.y) < 0.004 &&
+					Math.abs(glide.zoom - cam.zoom) < 0.25
+				) {
+					// Mutate rather than replace — the object identity is held by the
+					// dev camera handle.
+					cam.x = glide.x;
+					cam.y = glide.y;
+					cam.zoom = glide.zoom;
+					glideRef.current = null;
+				}
+			}
+
 			draw(ctx, w, h, {
 				camera: cameraRef.current,
 				edges: s.edges,
@@ -146,6 +276,7 @@ export default function GridCanvas() {
 				tripped: s.tripped,
 				sag: s.solution.sag,
 				lastBuilt: s.lastBuilt,
+				insetBottom: insetRef.current,
 				timeMs: now - start,
 				nowMs: now,
 			});
@@ -154,7 +285,7 @@ export default function GridCanvas() {
 
 		frame = requestAnimationFrame(render);
 		return () => cancelAnimationFrame(frame);
-	}, []);
+	}, [planCamera]);
 
 	/* --- Pointer handling --- */
 
@@ -171,6 +302,24 @@ export default function GridCanvas() {
 	const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
 		const { x, y } = localPoint(e);
 		e.currentTarget.setPointerCapture(e.pointerId);
+		// Any touch takes the camera back off autopilot.
+		glideRef.current = null;
+		pointersRef.current.set(e.pointerId, { x, y });
+
+		if (pointersRef.current.size === 2) {
+			const [a, b] = [...pointersRef.current.values()];
+			pinchRef.current = {
+				dist: Math.hypot(b.x - a.x, b.y - a.y) || 1,
+				mx: (a.x + b.x) / 2,
+				my: (a.y + b.y) / 2,
+			};
+			// A second finger turns a pan into a pinch, and neither finger lifting
+			// should then be read as a tap.
+			dragRef.current = null;
+			suppressTapRef.current = true;
+			return;
+		}
+
 		dragRef.current = {
 			startX: x,
 			startY: y,
@@ -183,8 +332,32 @@ export default function GridCanvas() {
 	const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
 		const { x, y, w, h } = localPoint(e);
 		const cam = cameraRef.current;
-		const drag = dragRef.current;
+		if (pointersRef.current.has(e.pointerId)) {
+			pointersRef.current.set(e.pointerId, { x, y });
+		}
 
+		// Pinch: scale by how the span changed, and pan by how the midpoint moved,
+		// so the pair of fingers keeps hold of the same patch of board.
+		const pinch = pinchRef.current;
+		if (pinch && pointersRef.current.size >= 2) {
+			const [a, b] = [...pointersRef.current.values()];
+			const dist = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+			const mx = (a.x + b.x) / 2;
+			const my = (a.y + b.y) / 2;
+			const [wx, wy] = screenToWorld(pinch.mx, pinch.my, cam, w, h);
+			cam.zoom = Math.max(
+				CAMERA.minZoom,
+				Math.min(CAMERA.maxZoom, cam.zoom * (dist / pinch.dist)),
+			);
+			const [nx, ny] = screenToWorld(mx, my, cam, w, h);
+			cam.x += wx - nx;
+			cam.y += wy - ny;
+			pinchRef.current = { dist, mx, my };
+			hoverRef.current = null;
+			return;
+		}
+
+		const drag = dragRef.current;
 		if (drag) {
 			const dx = x - drag.startX;
 			const dy = y - drag.startY;
@@ -202,8 +375,17 @@ export default function GridCanvas() {
 
 	const onPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
 		const { x, y, w, h } = localPoint(e);
+		pointersRef.current.delete(e.pointerId);
+		if (pointersRef.current.size < 2) pinchRef.current = null;
+
 		const drag = dragRef.current;
 		dragRef.current = null;
+
+		if (suppressTapRef.current) {
+			// Wait until every finger is off before taps count again.
+			if (pointersRef.current.size === 0) suppressTapRef.current = false;
+			return;
+		}
 		if (drag?.moved) return; // that was a pan
 
 		const store = useFlowy.getState();
@@ -225,19 +407,30 @@ export default function GridCanvas() {
 			store.select({ type: 'edge', id: edge });
 			return;
 		}
-		store.select(null);
+		// A miss does nothing. Four cells in five are empty, so a thumb lands on
+		// nothing constantly, and wiping every ring off the board for it was the
+		// single most destructive thing a tap could do. Clearing the anchor is
+		// still one tap — on the anchor itself.
+	};
+
+	const onPointerCancel = (e: React.PointerEvent<HTMLCanvasElement>) => {
+		pointersRef.current.delete(e.pointerId);
+		if (pointersRef.current.size < 2) pinchRef.current = null;
+		if (pointersRef.current.size === 0) suppressTapRef.current = false;
+		dragRef.current = null;
 	};
 
 	const onPointerLeave = () => {
 		pointerRef.current = null;
 		hoverRef.current = null;
-		dragRef.current = null;
 	};
 
-	// Zoom toward the cursor so the point under the pointer stays put.
+	// Zoom toward the cursor so the point under the pointer stays put. Desktop
+	// only — touch gets the same job done with a pinch.
 	const onWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
 		const { x, y, w, h } = localPoint(e);
 		const cam = cameraRef.current;
+		glideRef.current = null;
 		const [wx, wy] = screenToWorld(x, y, cam, w, h);
 		const next = Math.max(
 			CAMERA.minZoom,
@@ -254,10 +447,7 @@ export default function GridCanvas() {
 		const onKey = (e: KeyboardEvent) => {
 			const s = useFlowy.getState();
 			if (e.key === 'Escape') s.select(null);
-			if (e.key === 'Home' || e.key === 'h') {
-				cameraRef.current.x = 0.5;
-				cameraRef.current.y = 0.5;
-			}
+			if (e.key === 'Home' || e.key === 'h') s.goHome();
 			if (e.key === 'z') s.undo();
 		};
 		window.addEventListener('keydown', onKey);
@@ -271,6 +461,7 @@ export default function GridCanvas() {
 			onPointerDown={onPointerDown}
 			onPointerMove={onPointerMove}
 			onPointerUp={onPointerUp}
+			onPointerCancel={onPointerCancel}
 			onPointerLeave={onPointerLeave}
 			onWheel={onWheel}
 		/>

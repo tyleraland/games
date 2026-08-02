@@ -56,6 +56,7 @@ export default function HUD() {
 	const notice = useFlowy((s) => s.notice);
 	const buy = useFlowy((s) => s.buy);
 	const undo = useFlowy((s) => s.undo);
+	const goHome = useFlowy((s) => s.goHome);
 	const resetBreaker = useFlowy((s) => s.resetBreaker);
 
 	const openVolts = sourceVolts(levels.volts);
@@ -128,9 +129,10 @@ export default function HUD() {
 			</div>
 
 			<div className="flowy-hud-row flowy-hud-actions">
+				{/* Never disabled: on a phone a greyed-out button explains nothing,
+				    whereas pressing this one says what it would have done. */}
 				<button
-					className="flowy-btn undo"
-					disabled={history.length === 0}
+					className={`flowy-btn undo${history.length > 0 ? ' armed' : ''}`}
 					onClick={undo}
 				>
 					Undo
@@ -139,6 +141,11 @@ export default function HUD() {
 							+{history[history.length - 1].paid}c
 						</span>
 					)}
+				</button>
+
+				{/* Touch has no keyboard, so "press h" was no way home at all. */}
+				<button className="flowy-btn" onClick={goHome}>
+					Find source
 				</button>
 
 				{(Object.keys(UPGRADE_LABELS) as UpgradeKind[]).map((kind) => {
@@ -173,8 +180,8 @@ export default function HUD() {
 							: sag >= SAG_BROWNOUT
 								? `Browning out — ${fmt(solution.totalAmps, 2)} A through ${fmt(ohms, 2)} Ω is costing ${fmt(openVolts - terminal, 1)} V at the terminal.`
 								: offers.length > 0
-									? 'Tap any ringed node to wire it — the price on the ring is what it costs.'
-									: 'Tap a node to wire from it. Drag to pan, scroll to zoom.')}
+									? 'Tap any ringed node to wire it. The ring shows the price, and what it adds per beat.'
+									: 'Tap a node to wire from it. Drag to pan, pinch to zoom.')}
 			</div>
 		</div>
 	);

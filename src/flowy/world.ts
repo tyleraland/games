@@ -262,6 +262,17 @@ export interface LinkOffer {
 	cost: number;
 	/** True when the run points away from the anchor rather than back into it. */
 	outward: boolean;
+	/**
+	 * Coins per beat the whole network would gain by buying this — not just what
+	 * the new node earns, but the drag it puts on every other tap through the
+	 * extra sag. Filled in by the store, which is the only place that can solve.
+	 */
+	gain: number;
+	/**
+	 * True when the feeding end is dark, so the run would carry nothing until
+	 * something upstream lights up. Also filled in by the store.
+	 */
+	dead: boolean;
 }
 
 /**
@@ -316,6 +327,8 @@ export function offersFrom(
 				ohms: length * WIRE_OHMS_PER_UNIT,
 				cost: linkCost(length),
 				outward,
+				gain: 0,
+				dead: false,
 			});
 		}
 	}

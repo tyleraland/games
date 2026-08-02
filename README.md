@@ -66,14 +66,23 @@ current, every wire drops voltage, and the source only has so many watts.
 - **Tap a node** to wire from it. It becomes the *anchor*, and every node it
   could reach lights up with a ring and a price. The source starts anchored, so
   a fresh board is already showing you its opening moves.
+- Each ring carries its **price**, and — when the run would actually earn —
+  what it adds **per beat**, in gold. That figure is the change in the whole
+  network's income, so it already contains the extra sag the new load inflicts
+  on every tap that is already lit. A relay reads no figure at all.
 - **Tap a ring** to lay that run. It is bought there and then — no confirm step
   — and the anchor walks to the far end, so extending a line is one tap per
   node. **Undo** in the HUD (or <kbd>z</kbd>) walks the last build back at full
   price.
+- Runs out of an unlit node are drawn **broken**: buyable, but they carry
+  nothing until something upstream lights. The solid ones are the runs that
+  would feed it instead.
 - Tapping the anchor again clears it, which is also how you reach a node that is
-  currently wearing a ring. Tap **empty space** to clear everything.
-- **Drag** to pan, **scroll** to zoom, <kbd>h</kbd> to fly back to the source.
-  An arrow at the screen edge points home when the source is off-view.
+  currently wearing a ring. Tapping empty space does nothing.
+- **Drag** to pan, **pinch** to zoom (**scroll** on a desktop), and
+  **Find source** to fly home. The camera eases along as you build, so an
+  anchor's rings are never left off the edge of the screen. An arrow at the
+  screen edge points home when the source is off-view.
 - **Tap** a connection to inspect its volts, amps, ohms and watts. Selected
   connections can be **flipped** between `+` and `−`, **reversed**, **disabled**,
   or torn out for half their cost.

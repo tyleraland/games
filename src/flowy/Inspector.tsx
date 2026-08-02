@@ -26,9 +26,9 @@ export default function Inspector() {
 					<h2>Nothing selected</h2>
 					<p>
 						Tap any node to wire from it — everything within reach lights up with
-						a ring and a price, and tapping a ring lays the run. Tap a
-						connection to inspect it. Drag to pan, <kbd>h</kbd> to return to the
-						source.
+						a ring showing its price and what it would add per beat, and
+						tapping a ring lays the run. Tap a connection to inspect it. Drag
+						to pan, pinch to zoom, <strong>Find source</strong> to fly home.
 					</p>
 					<Legend />
 				</div>
@@ -56,6 +56,18 @@ export default function Inspector() {
 		(best, o) => (best === null || o.cost < best ? o.cost : best),
 		null,
 	);
+	// The one worth pointing at: most income per coin among what is buyable.
+	const bestPaying = affordable.reduce<(typeof affordable)[number] | null>(
+		(best, o) =>
+			o.gain > 0.005 && (!best || o.gain / o.cost > best.gain / best.cost)
+				? o
+				: best,
+		null,
+	);
+	const bestTarget = bestPaying ? getNode(bestPaying.target) : null;
+	// Runs out of this node are stillborn until it is lit; runs *into* it are
+	// exactly how you light it, so they are the ones to point at.
+	const feeds = offers.filter((o) => !o.dead);
 
 	return (
 		<aside className="flowy-inspector">
@@ -78,7 +90,7 @@ export default function Inspector() {
 
 			{/* The anchor state is the game's main verb, so say what it affords
 			    right at the top rather than burying it under the readouts. */}
-			<p className="flowy-wiring">
+			<p className={`flowy-wiring${!live && feeds.length > 0 ? ' dark' : ''}`}>
 				{offers.length === 0 ? (
 					<>Nothing left to reach from here — tap another node to wire from it.</>
 				) : affordable.length === 0 ? (
@@ -86,10 +98,29 @@ export default function Inspector() {
 						{offers.length} within reach, none affordable yet. The cheapest wants{' '}
 						{Math.min(...offers.map((o) => o.cost))}c.
 					</>
+				) : !live ? (
+					// Wiring outward from an unlit node buys wire that carries nothing.
+					<>
+						This node is dark, so runs <em>out</em> of it earn nothing yet — they
+						are drawn broken.{' '}
+						{feeds.length > 0
+							? `${feeds.length} of the rings would feed it instead; those are the solid ones.`
+							: 'Nothing in reach can feed it — wire towards the lit grid from the other end.'}
+					</>
 				) : (
 					<>
 						Wiring from here. {affordable.length} of {offers.length} ringed runs
-						are affordable, from {cheapest}c — tap a ring to lay one.
+						are affordable, from {cheapest}c.
+						{bestPaying && bestTarget ? (
+							<>
+								{' '}
+								Best payer: the {bestTarget.def.label.toLowerCase()} at (
+								{bestTarget.x}, {bestTarget.y}) for {bestPaying.cost}c, worth{' '}
+								<strong>+{bestPaying.gain.toFixed(2)}</strong> a beat.
+							</>
+						) : (
+							' None of them add income on their own — they are stepping stones towards a tap.'
+						)}
 					</>
 				)}
 			</p>

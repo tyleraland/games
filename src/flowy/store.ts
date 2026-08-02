@@ -103,10 +103,19 @@ interface FlowyState {
 	history: BuildRecord[];
 	/** The run built most recently, for the surge the canvas paints along it. */
 	lastBuilt: { id: string; at: number } | null;
+	/**
+	 * A request for the camera to go and look at a node. The canvas owns the
+	 * camera (it moves at frame rate and React has no business re-rendering for
+	 * it), so this is how the model asks it to move. `force` centres regardless;
+	 * otherwise the canvas only moves if the node's offers do not already fit.
+	 */
+	cameraCue: { id: number; node: string; force: boolean } | null;
 	/** Transient message shown under the HUD (bad purchase, blackout, …). */
 	notice: string | null;
 
 	tick: () => void;
+	/** Send the camera back to the source. */
+	goHome: () => void;
 	select: (selection: Selection) => void;
 	/** Tap a node: make it the anchor, or drop the anchor if it already was. */
 	tapNode: (id: string) => void;
@@ -124,25 +133,67 @@ interface FlowyState {
 	notify: (message: string | null) => void;
 }
 
+/** Monotonic id so the canvas can tell a fresh camera request from a stale one. */
+let cueId = 1;
+
 /** The anchor is simply whichever node is selected. */
 export const anchorOf = (selection: Selection) =>
 	selection?.type === 'node' ? selection.id : null;
 
 /**
+ * Coins per beat this solution pays out. Taps earn in proportion to how well
+ * they are actually fed, so this is a pure function of the solve — which is
+ * what lets an offer be priced in income as well as in coins.
+ */
+function incomeOf(solution: Solution): number {
+	let total = 0;
+	for (const id of solution.energized) {
+		const node = getNode(id);
+		if (!node || node.def.yield === 0) continue;
+		const v = Math.abs(solution.volts.get(id) ?? 0);
+		total += node.def.yield * Math.min(v / REFERENCE_VOLTS, MAX_YIELD_MULTIPLIER);
+	}
+	return total;
+}
+
+/**
  * The runs on offer from the anchor. Recomputed whenever the selection, the
  * graph or the solve moves, since all three change what is buyable and which
  * way round it would run.
+ *
+ * Each offer is then priced in *income* as well as coins, by solving the
+ * network once with that run added and diffing the payout. That is the number
+ * the player actually wants — a relay reads +0.00 and a tap reads what it is
+ * worth, including the sag it inflicts on every tap already lit. The graphs are
+ * tens of edges and the solve is O(E log V), so a handful of trial solves per
+ * selection is far cheaper than making the player guess.
  */
 function buildOffers(
 	selection: Selection,
 	edges: Record<string, FlowyEdge>,
 	solution: Solution,
+	levels: Record<UpgradeKind, number>,
+	tripped: boolean,
 ): LinkOffer[] {
 	const anchor = anchorOf(selection);
 	if (!anchor) return [];
 	const rankOf = new Map<string, number>();
 	solution.order.forEach((id, i) => rankOf.set(id, i));
-	return offersFrom(anchor, edges, (id) => rankOf.get(id) ?? Infinity);
+	const offers = offersFrom(anchor, edges, (id) => rankOf.get(id) ?? Infinity);
+
+	const base = incomeOf(solution);
+	for (const offer of offers) {
+		const from = getNode(offer.from);
+		const to = getNode(offer.to);
+		if (!from || !to) continue;
+		// A run out of a dark node carries nothing until something upstream lights
+		// up. A run *into* the anchor is the thing that would light it, so it is
+		// only the outward ones that can be born dead.
+		offer.dead = offer.outward && !solution.energized.has(offer.from);
+		const trial = { ...edges, [offer.id]: makeEdge(from, to) };
+		offer.gain = incomeOf(resolve(trial, levels, tripped)) - base;
+	}
+	return offers;
 }
 
 /**
@@ -182,9 +233,12 @@ export const useFlowy = create<FlowyState>((set, get) => ({
 		{ type: 'node', id: SOURCE_ID },
 		{},
 		resolve({}, { volts: 0, watts: 0, battery: 0 }, false),
+		{ volts: 0, watts: 0, battery: 0 },
+		false,
 	),
 	history: [],
 	lastBuilt: null,
+	cameraCue: null,
 	notice: null,
 
 	/* ---------------------------------------------------------------- */
@@ -243,7 +297,7 @@ export const useFlowy = create<FlowyState>((set, get) => ({
 				stored,
 				beat: s.beat + 1,
 				solution: dark,
-				offers: buildOffers(s.selection, s.edges, dark),
+				offers: buildOffers(s.selection, s.edges, dark, s.levels, true),
 				meters: { ...NO_METERS, openVolts, maxW: sourceMaxWatts(openVolts, ohms) },
 				notice:
 					'Blackout — undervoltage trip. Shed load or stiffen the source, then reset the breaker.',
@@ -253,15 +307,10 @@ export const useFlowy = create<FlowyState>((set, get) => ({
 
 		// Taps pay out in proportion to how well they are actually fed. There is
 		// no brownout multiplier anywhere: a sagging bus lowers every node's
-		// potential, and the lower potential is what shrinks the payout.
-		let incomeC = 0;
-		for (const id of solution.energized) {
-			const node = getNode(id);
-			if (!node || node.def.yield === 0) continue;
-			const v = Math.abs(solution.volts.get(id) ?? 0);
-			const quality = Math.min(v / REFERENCE_VOLTS, MAX_YIELD_MULTIPLIER);
-			incomeC += node.def.yield * quality;
-		}
+		// potential, and the lower potential is what shrinks the payout. This is
+		// the same function the offers are priced with, so the "+0.98" on a ring
+		// is the number that actually lands.
+		const incomeC = incomeOf(solution);
 
 		set({
 			beat: s.beat + 1,
@@ -292,22 +341,33 @@ export const useFlowy = create<FlowyState>((set, get) => ({
 		const s = get();
 		set({
 			selection,
-			offers: buildOffers(selection, s.edges, s.solution),
+			offers: buildOffers(selection, s.edges, s.solution, s.levels, s.tripped),
 			notice: null,
 		});
 	},
 
 	notify: (notice) => set({ notice }),
 
+	goHome: () =>
+		set((s) => ({
+			cameraCue: { id: cueId++, node: SOURCE_ID, force: true },
+			notice: null,
+			selection: s.selection,
+		})),
+
 	tapNode: (id) => {
 		const s = get();
 		// Tapping the anchor again puts the board away — one tap to a clean grid,
 		// and the way to re-anchor somewhere that is currently wearing an offer.
-		const selection: Selection =
-			anchorOf(s.selection) === id ? null : { type: 'node', id };
+		const dropping = anchorOf(s.selection) === id;
+		const selection: Selection = dropping ? null : { type: 'node', id };
 		set({
 			selection,
-			offers: buildOffers(selection, s.edges, s.solution),
+			offers: buildOffers(selection, s.edges, s.solution, s.levels, s.tripped),
+			// Pull the new anchor's ring cluster into view if it does not already
+			// fit. MAX_LINK_DIST is 3u and a phone shows barely 7u across, so an
+			// anchor's own offers are routinely off-screen otherwise.
+			cameraCue: dropping ? s.cameraCue : { id: cueId++, node: id, force: false },
 			notice: null,
 		});
 	},
@@ -352,13 +412,20 @@ export const useFlowy = create<FlowyState>((set, get) => ({
 			coins: s.coins - edge.paid,
 			solution,
 			selection,
-			offers: buildOffers(selection, edges, solution),
+			offers: buildOffers(selection, edges, solution, s.levels, s.tripped),
 			history: [
 				...s.history.slice(-(UNDO_DEPTH - 1)),
 				{ edgeId: edge.id, anchor: anchorOf(s.selection), paid: edge.paid },
 			],
 			lastBuilt: { id: edge.id, at: performance.now() },
-			notice: `Wired the ${landed?.def.label.toLowerCase() ?? 'node'} at (${b.x}, ${b.y}) — ${edge.paid}c.`,
+			cameraCue: { id: cueId++, node: edge.to, force: false },
+			notice:
+				`Wired the ${landed?.def.label.toLowerCase() ?? 'node'} at (${b.x}, ${b.y}) — ${edge.paid}c.` +
+				(offer.dead
+					? ' It is dark until the feeding end is lit.'
+					: offer.gain > 0.005
+						? ` +${offer.gain.toFixed(2)} a beat.`
+						: ''),
 		});
 	},
 
@@ -384,9 +451,12 @@ export const useFlowy = create<FlowyState>((set, get) => ({
 				coins: s.coins + record.paid,
 				solution,
 				selection,
-				offers: buildOffers(selection, edges, solution),
+				offers: buildOffers(selection, edges, solution, s.levels, s.tripped),
 				history,
 				lastBuilt: null,
+				cameraCue: record.anchor
+					? { id: cueId++, node: record.anchor, force: false }
+					: s.cameraCue,
 				notice: `Undone — ${record.paid}c back.`,
 			});
 			return;
@@ -403,7 +473,7 @@ export const useFlowy = create<FlowyState>((set, get) => ({
 			[id]: { ...edge, polarity: (edge.polarity * -1) as 1 | -1 },
 		};
 		const solution = resolve(edges, s.levels, s.tripped);
-		set({ edges, solution, offers: buildOffers(s.selection, edges, solution) });
+		set({ edges, solution, offers: buildOffers(s.selection, edges, solution, s.levels, s.tripped) });
 	},
 
 	reverseLink: (id) => {
@@ -435,7 +505,7 @@ export const useFlowy = create<FlowyState>((set, get) => ({
 			edges,
 			solution,
 			selection,
-			offers: buildOffers(selection, edges, solution),
+			offers: buildOffers(selection, edges, solution, s.levels, s.tripped),
 			// The wire survived, but under a new id, so the undo entry has to follow.
 			history: s.history.map((h) =>
 				h.edgeId === id ? { ...h, edgeId: flipped.id } : h,
@@ -450,7 +520,7 @@ export const useFlowy = create<FlowyState>((set, get) => ({
 		if (!edge) return;
 		const edges = { ...s.edges, [id]: { ...edge, enabled: !edge.enabled } };
 		const solution = resolve(edges, s.levels, s.tripped);
-		set({ edges, solution, offers: buildOffers(s.selection, edges, solution) });
+		set({ edges, solution, offers: buildOffers(s.selection, edges, solution, s.levels, s.tripped) });
 	},
 
 	removeLink: (id) => {
@@ -468,7 +538,7 @@ export const useFlowy = create<FlowyState>((set, get) => ({
 			coins: s.coins + Math.floor(edge.paid * REFUND_FRACTION),
 			selection,
 			solution,
-			offers: buildOffers(selection, edges, solution),
+			offers: buildOffers(selection, edges, solution, s.levels, s.tripped),
 			history: s.history.filter((h) => h.edgeId !== id),
 		});
 	},
@@ -490,7 +560,7 @@ export const useFlowy = create<FlowyState>((set, get) => ({
 			levels,
 			coins: s.coins - cost,
 			solution,
-			offers: buildOffers(s.selection, s.edges, solution),
+			offers: buildOffers(s.selection, s.edges, solution, levels, s.tripped),
 			notice: null,
 		});
 	},
@@ -501,7 +571,7 @@ export const useFlowy = create<FlowyState>((set, get) => ({
 		set({
 			tripped: false,
 			solution,
-			offers: buildOffers(s.selection, s.edges, solution),
+			offers: buildOffers(s.selection, s.edges, solution, s.levels, false),
 			notice: null,
 		});
 	},
