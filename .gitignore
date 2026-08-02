@@ -23,3 +23,8 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Transient scratch from local Playwright harnesses (agent test scripts).
+.probe-*.mjs
+.rev-*.mjs
+.rev*/
