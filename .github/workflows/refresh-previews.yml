@@ -1,0 +1,38 @@
+name: Refresh branch previews
+
+# Pushing a work branch should update its preview, but the github-pages
+# environment only accepts deployments from the default branch — a workflow
+# triggered on a work-branch ref builds and then fails at the deploy step.
+#
+# So the push does not deploy anything itself. It asks the Pages workflow to
+# run against main, where deployment is allowed. That run checks out main for
+# the live site and builds a preview from every work branch's current head, so
+# the branch that was just pushed gets picked up without its own ref ever being
+# the one deploying.
+
+on:
+  push:
+    branches: ['claude/**']
+
+# Enough to start another workflow, and nothing else.
+permissions:
+  actions: write
+
+# One refresh at a time; a burst of pushes only needs the last one to win.
+concurrency:
+  group: refresh-previews
+  cancel-in-progress: true
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ask the Pages workflow to redeploy from main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run deploy-pages.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main
+          echo "Requested a Pages deploy from main; it will rebuild the preview"
+          echo "for ${GITHUB_REF_NAME} along with every other work branch."
