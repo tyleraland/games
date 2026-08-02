@@ -5,8 +5,10 @@ import {
 	COLORS,
 	MIN_VOLTS,
 	PULSE_HOPS_PER_BEAT,
+	SAG_BROWNOUT,
 	SOURCE_ID,
 	TICK_MS,
+	sagSeverity,
 } from './config';
 import type { Solution } from './sim';
 import type { FlowyEdge } from './world';
@@ -30,9 +32,43 @@ export interface RenderInput {
 	/** Cursor in world space, for drawing the in-progress connection. */
 	pointer: { x: number; y: number } | null;
 	tripped: boolean;
-	/** Brownout multiplier — dims the whole network when the source is straining. */
-	factor: number;
+	/** Fraction of open-circuit voltage the source has lost, 0..1. */
+	sag: number;
 	timeMs: number;
+}
+
+/* ------------------------------------------------------------------ */
+/* Brownout flicker                                                    */
+/* ------------------------------------------------------------------ */
+
+const fract = (n: number) => n - Math.floor(n);
+
+/** Deterministic value noise, so the flicker is smooth rather than strobing. */
+function noise1(t: number): number {
+	const i = Math.floor(t);
+	const f = t - i;
+	const a = fract(Math.sin(i * 127.1) * 43758.5453);
+	const b = fract(Math.sin((i + 1) * 127.1) * 43758.5453);
+	return a + (b - a) * f * f * (3 - 2 * f);
+}
+
+/**
+ * How brightly the network burns right now, 0..1.
+ *
+ * A healthy bus is a flat 1. Once it starts sagging the lights gutter — two
+ * noise bands for the constant unsteadiness, plus an occasional deep dip like
+ * a big load stepping on and off somewhere. The whole thing scales with how
+ * far through the brownout band the terminal has fallen, so a mild sag is a
+ * faint waver and a severe one is barely holding on.
+ */
+export function flickerAt(timeMs: number, sag: number): number {
+	if (sag <= SAG_BROWNOUT) return 1;
+	const severity = sagSeverity(sag);
+	const t = timeMs / 1000;
+	const waver = 0.55 * noise1(t * 8.3) + 0.45 * noise1(t * 21.7);
+	const gutter = noise1(t * 2.9) > 0.82 ? 1 : 0;
+	const dip = severity * (0.4 * waver + 0.35 * gutter);
+	return Math.max(0.12, 1 - dip);
 }
 
 export const worldToScreen = (
@@ -65,6 +101,9 @@ function withAlpha(hex: string, alpha: number): string {
 	return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
 }
 
+/** RenderInput plus the per-frame brightness the flicker resolved to. */
+type Scene = RenderInput & { brightness: number };
+
 export function draw(
 	ctx: CanvasRenderingContext2D,
 	w: number,
@@ -72,6 +111,10 @@ export function draw(
 	input: RenderInput,
 ) {
 	const { camera: cam, edges } = input;
+	const scene: Scene = {
+		...input,
+		brightness: input.tripped ? 0 : flickerAt(input.timeMs, input.sag),
+	};
 
 	ctx.fillStyle = COLORS.background;
 	ctx.fillRect(0, 0, w, h);
@@ -83,19 +126,55 @@ export function draw(
 
 	// Connections first so nodes sit on top of their own wires.
 	for (const edge of Object.values(edges)) {
-		drawEdge(ctx, cam, w, h, edge, input);
+		drawEdge(ctx, cam, w, h, edge, scene);
 	}
 
-	drawPendingLink(ctx, cam, w, h, input);
+	drawPendingLink(ctx, cam, w, h, scene);
 
 	for (const node of nodesInRect(x0 - 1, y0 - 1, x1 + 1, y1 + 1)) {
-		drawNode(ctx, cam, w, h, node.id, input);
+		drawNode(ctx, cam, w, h, node.id, scene);
 	}
 
-	if (!input.tripped) drawPulses(ctx, cam, w, h, input);
+	if (!input.tripped) drawPulses(ctx, cam, w, h, scene);
 
 	// Panning far afield is the whole exploration loop, so keep a way home.
 	drawSourceCompass(ctx, cam, w, h);
+
+	drawSagVignette(ctx, w, h, scene);
+}
+
+/**
+ * Amber creeping in from the edges of the screen while the bus is down, going
+ * red as it approaches the trip point. Costs nothing to read and makes it
+ * unmistakable that the problem is the supply rather than the wiring.
+ */
+function drawSagVignette(
+	ctx: CanvasRenderingContext2D,
+	w: number,
+	h: number,
+	scene: Scene,
+) {
+	if (scene.tripped) {
+		ctx.fillStyle = 'rgba(6, 8, 12, 0.55)';
+		ctx.fillRect(0, 0, w, h);
+		return;
+	}
+	if (scene.sag <= SAG_BROWNOUT) return;
+
+	const severity = sagSeverity(scene.sag);
+	const cx = w / 2;
+	const cy = h / 2;
+	const inner = Math.min(w, h) * 0.28;
+	const outer = Math.hypot(w, h) * 0.62;
+	const gradient = ctx.createRadialGradient(cx, cy, inner, cx, cy, outer);
+	// Amber at a mild sag, red once it is getting dangerous.
+	const red = Math.round(224 + 20 * severity);
+	const green = Math.round(150 - 80 * severity);
+	const peak = (0.1 + 0.42 * severity) * (0.65 + 0.35 * scene.brightness);
+	gradient.addColorStop(0, `rgba(${red}, ${green}, 60, 0)`);
+	gradient.addColorStop(1, `rgba(${red}, ${green}, 60, ${peak.toFixed(3)})`);
+	ctx.fillStyle = gradient;
+	ctx.fillRect(0, 0, w, h);
 }
 
 /* ------------------------------------------------------------------ */
@@ -140,7 +219,7 @@ function drawEdge(
 	w: number,
 	h: number,
 	edge: FlowyEdge,
-	input: RenderInput,
+	input: Scene,
 ) {
 	const from = getNode(edge.from);
 	const to = getNode(edge.to);
@@ -169,10 +248,10 @@ function drawEdge(
 	ctx.lineCap = 'round';
 	ctx.setLineDash(edge.enabled ? [] : [6, 6]);
 	ctx.lineWidth = width;
-	ctx.strokeStyle = live ? withAlpha(color, 0.35 + 0.55 * input.factor) : color;
+	ctx.strokeStyle = live ? withAlpha(color, 0.35 + 0.55 * input.brightness) : color;
 	if (live) {
 		ctx.shadowColor = color;
-		ctx.shadowBlur = 8 * input.factor;
+		ctx.shadowBlur = 8 * input.brightness;
 	}
 	ctx.beginPath();
 	ctx.moveTo(ax, ay);
@@ -227,7 +306,7 @@ function drawNode(
 	w: number,
 	h: number,
 	id: string,
-	input: RenderInput,
+	input: Scene,
 ) {
 	const node = getNode(id);
 	if (!node) return;
@@ -241,14 +320,15 @@ function drawNode(
 	const hovered = input.hoverNode === id;
 	const color = node.def.color;
 
-	// Glow scales with how well the node is fed, so voltage sag along a long run
-	// is visible without opening the inspector.
+	// Both the glow and the fill scale with how well the node is fed, so voltage
+	// sag along a long run — and the whole grid dimming during a brownout — is
+	// visible without opening the inspector.
 	if (energized) {
-		const strength = Math.min(1, Math.abs(volts) / 48) * input.factor;
+		const strength = Math.min(1, Math.abs(volts) / 48) * input.brightness;
 		ctx.save();
 		ctx.shadowColor = color;
 		ctx.shadowBlur = (isSource ? 26 : 14) * (0.4 + strength);
-		ctx.fillStyle = withAlpha(color, 0.9);
+		ctx.fillStyle = withAlpha(color, 0.3 + 0.6 * strength);
 		ctx.beginPath();
 		ctx.arc(sx, sy, r, 0, Math.PI * 2);
 		ctx.fill();
@@ -330,7 +410,7 @@ function drawPendingLink(
 	cam: Camera,
 	w: number,
 	h: number,
-	input: RenderInput,
+	input: Scene,
 ) {
 	if (!input.linkFrom || !input.pointer) return;
 	const from = getNode(input.linkFrom);
@@ -362,7 +442,7 @@ function drawPulses(
 	cam: Camera,
 	w: number,
 	h: number,
-	input: RenderInput,
+	input: Scene,
 ) {
 	const { solution, timeMs } = input;
 	const beats = timeMs / TICK_MS;
@@ -388,7 +468,7 @@ function drawPulses(
 		const color = edge.polarity > 0 ? COLORS.positive : COLORS.negative;
 		const size = Math.max(2, Math.min(6, 2 + amps * 2)) * (cam.zoom / 56);
 		ctx.save();
-		ctx.globalAlpha = 0.85 * input.factor;
+		ctx.globalAlpha = 0.85 * input.brightness;
 		ctx.shadowColor = color;
 		ctx.shadowBlur = 10;
 		ctx.fillStyle = '#fff6e8';

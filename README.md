@@ -91,7 +91,12 @@ voltage upgrades.
 
 **Charge follows the path of least resistance.** A Dijkstra tree over
 (wire Ω + node Ω) decides which connection actually feeds each node. The others
-stay live but idle — redundant paths, not extra throughput.
+stay live but idle — redundant paths, not extra throughput. This is the one
+place the model knowingly departs from a real network: because all the current
+goes down a single tree rather than sharing across parallel paths, adding a
+redundant link can *reroute* supply rather than reinforce it. The inspector
+names the connection actually feeding each node, and a redundant one can always
+be disabled.
 
 **Polarity is the interesting part.** A `−` connection inverts the potential it
 passes on; everything downstream sits on the negative rail and works fine there.
@@ -100,20 +105,51 @@ oppose, and only the difference survives — which is how you switch a branch of
 without disabling anything. Two feeds of the *same* sign do not stack; parallel
 supplies never do.
 
-**The source is finite.** Draw past its wattage and it browns out, with output
-multiplied by `1/load²` — 110% load costs you 17% of your yield, 150% costs you
-56%. Hit **twice** capacity and the breaker trips: the whole network goes dark
-until you shed load and reset it.
+**The source is not ideal, and that is the whole brownout.** It has internal
+resistance, so its terminal only holds `V_open − I·r`. Hang more load on it and
+the bus genuinely sags — there is no penalty multiplier anywhere in the code.
+Every node's potential is propagated down from that terminal, so one number
+falling drags the entire network with it: the grid dims, the far reaches drop
+below their 6 V wake threshold and go dark, and taps earn less because they are
+actually under-volted. Past a **60%** sag the undervoltage protection trips and
+drops the load entirely.
 
-**The battery** absorbs surplus watts and spends them to cover a shortfall,
-which is what keeps a network flirting with its ceiling out of brownout. (The
-spec left its use open; buffering is the interpretation here. Storing whole
-beats to fire a burst later is the obvious next thing to try.)
+Because the loads are constant-current, the sag follows straight from Ohm's law
+in a single pass — no load-flow iteration. It also means income has a *peak*:
+each tap you add earns a little less and pushes every other tap down too, so
+past a point another tap makes you poorer. That is maximum power transfer
+showing up as a game mechanic rather than as a rule someone wrote down.
+
+The Capacity upgrade buys a **stiffer** source (lower internal resistance)
+rather than an abstract watt cap. The source's rating shown in the HUD is
+`V²/4r`, the most it could ever hand to a matched load.
+
+**The battery** is voltage support: while it has charge it injects current at
+the bus so the source has less to push, which lifts the terminal back up and
+relights whatever had dropped out. When there is headroom it charges instead,
+throttled so charging never causes the sag it exists to prevent. (The spec left
+its use open; propping the bus up is the interpretation here.)
 
 Taps pay out in proportion to how well they are fed — a tap at half its rated
 48 V returns half a coin — so voltage upgrades raise income as well as reach,
 up to a 2× cap. They also raise draw, since `P = V·I`, which is a real tradeoff
 rather than a free win.
+
+### Seeing the brownout
+
+The sag is meant to be unmistakable without opening a panel:
+
+- The **bus gauge** is the headline reading — terminal volts against
+  open-circuit, with the bar length being the voltage actually held and the gap
+  on the right being what has sagged away. The trip point is marked on it.
+- The grid **dims** — node glow and fill both scale with the potential reaching
+  them, so a sagging bus visibly drains the whole map.
+- The lights **flicker**, guttering harder the further through the band the bus
+  has fallen, with occasional deep dips like a big load stepping on and off.
+  The HUD readout flickers on the same cadence, so the panel and the grid read
+  as one failing system. Suppressed under `prefers-reduced-motion`.
+- A **vignette** creeps in from the screen edges, amber at a mild sag and red as
+  it nears the trip.
 
 ### Node kinds
 
@@ -137,12 +173,20 @@ and the world costs nothing to keep around.
 | --- | --- |
 | `src/flowy/config.ts` | Every tunable number — grid, electrical model, economy, palette |
 | `src/flowy/world.ts` | Procedural lattice, node kinds, connection cost and validity |
-| `src/flowy/sim.ts` | The solve: supply tree, currents, voltage drops, polarity |
+| `src/flowy/sim.ts` | The solve: supply tree, currents, terminal sag, voltage drops, polarity |
 | `src/flowy/store.ts` | zustand state, the beat, and every player action |
 | `src/flowy/render.ts` | Canvas painter — pure function of camera, state and clock |
 | `src/flowy/GridCanvas.tsx` | Canvas element, rAF loop, pan/zoom/hit-testing |
-| `src/flowy/HUD.tsx` | Top bar: meters, load bar, upgrade shop |
+| `src/flowy/FlowyApp.tsx` | The game shell, free of any router dependency |
+| `src/flowy/HUD.tsx` | Top bar: meters, bus gauge, upgrade shop |
 | `src/flowy/Inspector.tsx` | Side panel for the selected node or connection |
+
+### Standalone build
+
+`node scripts/build-flowy-standalone.mjs` builds Flowy on its own and inlines
+the JS and CSS into one self-contained HTML file at
+`dist-flowy/flowy-standalone.html` (~220 KB, no external requests). Useful for
+dropping the game somewhere static without the rest of the collection.
 
 Camera and pointer state live in refs rather than React state — panning happens
 at frame rate, and the surrounding panels only need to re-render once a beat.

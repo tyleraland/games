@@ -115,7 +115,7 @@ export default function GridCanvas() {
 				linkFrom: s.linkFrom,
 				pointer: pointerRef.current,
 				tripped: s.tripped,
-				factor: s.tripped ? 0 : s.meters.factor,
+				sag: s.solution.sag,
 				timeMs: now - start,
 			});
 			frame = requestAnimationFrame(render);

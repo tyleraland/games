@@ -3,6 +3,8 @@ import {
 	REFERENCE_VOLTS,
 	MAX_YIELD_MULTIPLIER,
 	REFUND_FRACTION,
+	SAG_BROWNOUT,
+	SOURCE_ID,
 	linkCost,
 } from './config';
 import { useFlowy } from './store';
@@ -86,6 +88,27 @@ export default function Inspector() {
 							coins < pendingCost ? ' (you cannot afford it)' : ''
 						}`}
 				</div>
+			)}
+
+			{node.id === SOURCE_ID && (
+				<dl className="flowy-readout">
+					<Row label="Open circuit" value={`${fmt(solution.openVolts)} V`} />
+					<Row label="At the terminal" value={`${fmt(solution.terminalVolts)} V`} />
+					<Row label="Internal resistance" value={`${fmt(solution.sourceOhms)} Ω`} />
+					<Row label="Sagged away" value={`${fmt(solution.sag * 100, 1)}%`} />
+					<Row label="Pulled by network" value={`${fmt(solution.totalAmps, 3)} A`} />
+					<Row label="Through the source" value={`${fmt(solution.sourceAmps, 3)} A`} />
+					<Row label="Cooking the source" value={`${fmt(solution.sourceLossW, 2)} W`} />
+				</dl>
+			)}
+
+			{node.id === SOURCE_ID && solution.sag > SAG_BROWNOUT && (
+				<p className="flowy-hint">
+					{fmt(solution.sourceAmps, 2)} A through the source's own resistance is
+					costing {fmt(solution.openVolts - solution.terminalVolts, 1)} V before
+					the network sees a volt of it. Shed load, stiffen the source, or lean
+					on the battery.
+				</p>
 			)}
 
 			<dl className="flowy-readout">

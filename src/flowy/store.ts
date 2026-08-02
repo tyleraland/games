@@ -1,17 +1,18 @@
 import { create } from 'zustand';
 import {
-	BLACKOUT_LOAD,
+	BATTERY_SUPPORT_SAG,
 	MAX_YIELD_MULTIPLIER,
 	REFERENCE_VOLTS,
 	REFUND_FRACTION,
+	SAG_TRIP,
 	SOURCE_ID,
 	START_COINS,
 	TICK_MS,
 	batteryJoules,
 	batteryWatts,
-	brownoutFactor,
+	sourceMaxWatts,
+	sourceOhms,
 	sourceVolts,
-	sourceWatts,
 	upgradeCost,
 	type UpgradeKind,
 } from './config';
@@ -32,29 +33,41 @@ export type Selection =
 
 /** Snapshot of the last beat, for the HUD. */
 export interface Meters {
-	/** Watts drawn at the source terminal. */
+	/** What the source would read with nothing hung off it. */
+	openVolts: number;
+	/** What it actually reads under load. The gap is the brownout. */
+	terminalVolts: number;
+	/** Fraction of open-circuit voltage lost at the terminal, 0..1. */
+	sag: number;
+	/** Total current the network is pulling. */
+	totalAmps: number;
+	/** Watts handed to the network at the terminal. */
 	demandW: number;
-	/** Watts the source itself can supply. */
-	capacityW: number;
+	/** The source's own ceiling, V²/4r. */
+	maxW: number;
 	/** Watts the battery contributed (negative while charging). */
 	batteryW: number;
-	/** demand / (capacity + battery discharge). */
-	load: number;
-	/** Output multiplier from the brownout curve — 1 when healthy. */
-	factor: number;
+	/** Amps the battery injected at the bus. */
+	batteryAmps: number;
 	/** Watts lost as heat in wires and node internals. */
 	lossW: number;
+	/** Watts cooked inside the source by its own resistance. */
+	sourceLossW: number;
 	/** Coins earned on the last beat. */
 	incomeC: number;
 }
 
 const NO_METERS: Meters = {
+	openVolts: 0,
+	terminalVolts: 0,
+	sag: 0,
+	totalAmps: 0,
 	demandW: 0,
-	capacityW: 0,
+	maxW: 0,
 	batteryW: 0,
-	load: 0,
-	factor: 1,
+	batteryAmps: 0,
 	lossW: 0,
+	sourceLossW: 0,
 	incomeC: 0,
 };
 
@@ -92,19 +105,28 @@ interface FlowyState {
 	notify: (message: string | null) => void;
 }
 
-/** Re-run the solve against the current graph and upgrade level. */
+/**
+ * Re-run the solve against the current graph, upgrades and battery support.
+ * A tripped breaker is an open circuit: the source sits at open-circuit volts
+ * with nothing drawing on it, and the network sees nothing at all.
+ */
 function resolve(
 	edges: Record<string, FlowyEdge>,
-	voltLevel: number,
+	levels: Record<UpgradeKind, number>,
 	tripped: boolean,
+	batteryAmps = 0,
 ): Solution {
-	if (tripped) return solve([], sourceVolts(voltLevel));
-	return solve(Object.values(edges), sourceVolts(voltLevel));
+	const spec = {
+		openVolts: sourceVolts(levels.volts),
+		ohms: sourceOhms(levels.watts),
+		batteryAmps,
+	};
+	return solve(tripped ? [] : Object.values(edges), spec);
 }
 
 export const useFlowy = create<FlowyState>((set, get) => ({
 	edges: {},
-	solution: solve([], sourceVolts(0)),
+	solution: resolve({}, { volts: 0, watts: 0, battery: 0 }, false),
 
 	coins: START_COINS,
 	beat: 0,
@@ -125,72 +147,89 @@ export const useFlowy = create<FlowyState>((set, get) => ({
 	tick: () => {
 		const s = get();
 		const dt = TICK_MS / 1000;
-		const capacityW = sourceWatts(s.levels.watts);
-		const demandW = s.tripped ? 0 : s.solution.demandW;
-
-		// The battery fills from whatever headroom is left and empties to cover a
-		// shortfall — which is what keeps a spiky network out of brownout.
+		const openVolts = sourceVolts(s.levels.volts);
+		const ohms = sourceOhms(s.levels.watts);
 		const capJ = batteryJoules(s.levels.battery);
 		const rateW = batteryWatts(s.levels.battery);
-		const deficit = demandW - capacityW;
-		let batteryW = 0;
-		let stored = s.stored;
-		if (deficit > 0) {
-			batteryW = Math.min(deficit, rateW, stored / dt);
-		} else if (capJ > 0) {
-			batteryW = -Math.min(-deficit, rateW, (capJ - stored) / dt);
+
+		// Solve once with the source carrying everything, to see how far the bus
+		// would fall on its own.
+		const bare = resolve(s.edges, s.levels, s.tripped);
+
+		// The battery is voltage support: it injects current at the bus to hold
+		// the sag down to its target, and soaks up spare current to charge when
+		// there is headroom. Positive amps discharge, negative amps charge.
+		const allowedAmps = ohms > 0 ? (openVolts * BATTERY_SUPPORT_SAG) / ohms : 0;
+		const vEst = Math.max(bare.terminalVolts, 1);
+		let batteryAmps = 0;
+		if (capJ > 0 && !s.tripped) {
+			if (bare.totalAmps > allowedAmps) {
+				batteryAmps = Math.min(
+					bare.totalAmps - allowedAmps,
+					rateW / vEst,
+					s.stored / dt / vEst,
+				);
+			} else {
+				// Charging pulls extra current through the source, so never take
+				// more than the headroom that keeps the bus inside its target.
+				batteryAmps = -Math.min(
+					allowedAmps - bare.totalAmps,
+					rateW / vEst,
+					(capJ - s.stored) / dt / vEst,
+				);
+			}
 		}
-		stored = Math.max(0, Math.min(capJ, stored - batteryW * dt));
 
-		const supplyW = capacityW + Math.max(0, batteryW);
-		const load = supplyW > 0 ? demandW / supplyW : 0;
+		const solution = resolve(s.edges, s.levels, s.tripped, batteryAmps);
+		const batteryW = batteryAmps * Math.max(solution.terminalVolts, 1);
+		const stored = Math.max(
+			0,
+			Math.min(capJ, s.stored - batteryW * dt),
+		);
 
-		// Past twice capacity the breaker gives up entirely.
-		if (!s.tripped && load >= BLACKOUT_LOAD) {
+		// Undervoltage trip: past SAG_TRIP the protective gear drops the load
+		// rather than let everything sit there cooking at half voltage.
+		if (!s.tripped && solution.sag > SAG_TRIP) {
 			set({
 				tripped: true,
 				stored,
 				beat: s.beat + 1,
-				solution: resolve(s.edges, s.levels.volts, true),
-				meters: {
-					...NO_METERS,
-					demandW,
-					capacityW,
-					load,
-					factor: 0,
-				},
-				notice: 'Blackout — the breaker tripped. Shed load, then reset it.',
+				solution: resolve(s.edges, s.levels, true),
+				meters: { ...NO_METERS, openVolts, maxW: sourceMaxWatts(openVolts, ohms) },
+				notice:
+					'Blackout — undervoltage trip. Shed load or stiffen the source, then reset the breaker.',
 			});
 			return;
 		}
 
-		const factor = s.tripped ? 0 : brownoutFactor(load);
-
-		// Taps pay out in proportion to how well they are fed: a tap sitting at
-		// half its rated voltage returns half a coin, and a brownout scales the
-		// whole network down on top of that.
+		// Taps pay out in proportion to how well they are actually fed. There is
+		// no brownout multiplier anywhere: a sagging bus lowers every node's
+		// potential, and the lower potential is what shrinks the payout.
 		let incomeC = 0;
-		if (!s.tripped) {
-			for (const id of s.solution.energized) {
-				const node = getNode(id);
-				if (!node || node.def.yield === 0) continue;
-				const v = Math.abs(s.solution.volts.get(id) ?? 0);
-				const quality = Math.min(v / REFERENCE_VOLTS, MAX_YIELD_MULTIPLIER);
-				incomeC += node.def.yield * quality * factor;
-			}
+		for (const id of solution.energized) {
+			const node = getNode(id);
+			if (!node || node.def.yield === 0) continue;
+			const v = Math.abs(solution.volts.get(id) ?? 0);
+			const quality = Math.min(v / REFERENCE_VOLTS, MAX_YIELD_MULTIPLIER);
+			incomeC += node.def.yield * quality;
 		}
 
 		set({
 			beat: s.beat + 1,
 			coins: s.coins + incomeC,
 			stored,
+			solution,
 			meters: {
-				demandW,
-				capacityW,
+				openVolts,
+				terminalVolts: solution.terminalVolts,
+				sag: solution.sag,
+				totalAmps: solution.totalAmps,
+				demandW: solution.demandW,
+				maxW: sourceMaxWatts(openVolts, ohms),
 				batteryW,
-				load,
-				factor,
-				lossW: s.tripped ? 0 : s.solution.lossW,
+				batteryAmps,
+				lossW: solution.lossW,
+				sourceLossW: solution.sourceLossW,
 				incomeC,
 			},
 		});
@@ -249,7 +288,7 @@ export const useFlowy = create<FlowyState>((set, get) => ({
 			// Chain from the node just wired, so long runs are a series of clicks.
 			linkFrom: to,
 			selection: { type: 'edge', id: edge.id },
-			solution: resolve(edges, s.levels.volts, s.tripped),
+			solution: resolve(edges, s.levels, s.tripped),
 			notice: null,
 		});
 	},
@@ -262,7 +301,7 @@ export const useFlowy = create<FlowyState>((set, get) => ({
 			...s.edges,
 			[id]: { ...edge, polarity: (edge.polarity * -1) as 1 | -1 },
 		};
-		set({ edges, solution: resolve(edges, s.levels.volts, s.tripped) });
+		set({ edges, solution: resolve(edges, s.levels, s.tripped) });
 	},
 
 	toggleEnabled: (id) => {
@@ -270,7 +309,7 @@ export const useFlowy = create<FlowyState>((set, get) => ({
 		const edge = s.edges[id];
 		if (!edge) return;
 		const edges = { ...s.edges, [id]: { ...edge, enabled: !edge.enabled } };
-		set({ edges, solution: resolve(edges, s.levels.volts, s.tripped) });
+		set({ edges, solution: resolve(edges, s.levels, s.tripped) });
 	},
 
 	removeLink: (id) => {
@@ -283,7 +322,7 @@ export const useFlowy = create<FlowyState>((set, get) => ({
 			edges,
 			coins: s.coins + Math.floor(edge.paid * REFUND_FRACTION),
 			selection: null,
-			solution: resolve(edges, s.levels.volts, s.tripped),
+			solution: resolve(edges, s.levels, s.tripped),
 		});
 	},
 
@@ -298,11 +337,13 @@ export const useFlowy = create<FlowyState>((set, get) => ({
 		set({
 			levels,
 			coins: s.coins - cost,
-			// A voltage bump changes every potential in the network.
+			// Volts and stiffness both move the terminal, and the terminal is
+			// where every potential in the network is propagated from. Only the
+			// battery leaves the solve alone until the next beat.
 			solution:
-				kind === 'volts'
-					? resolve(s.edges, levels.volts, s.tripped)
-					: s.solution,
+				kind === 'battery'
+					? s.solution
+					: resolve(s.edges, levels, s.tripped),
 			notice: null,
 		});
 	},
@@ -311,7 +352,7 @@ export const useFlowy = create<FlowyState>((set, get) => ({
 		const s = get();
 		set({
 			tripped: false,
-			solution: resolve(s.edges, s.levels.volts, false),
+			solution: resolve(s.edges, s.levels, false),
 			notice: null,
 		});
 	},
@@ -319,6 +360,13 @@ export const useFlowy = create<FlowyState>((set, get) => ({
 
 /** Convenience for the canvas, which reads state outside React's render loop. */
 export const flowyState = () => useFlowy.getState();
+
+// Dev-only handle on the live store, so the console and integration checks can
+// set up a board directly instead of clicking through an entire build order.
+// Stripped from production builds by the `import.meta.env.DEV` guard.
+if (import.meta.env.DEV) {
+	(window as unknown as { flowy?: typeof useFlowy }).flowy = useFlowy;
+}
 
 /** The id a hovered node would connect *from*, if a build is in progress. */
 export const pendingEdgeId = (from: string | null, to: string | null) =>

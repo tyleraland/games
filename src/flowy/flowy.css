@@ -76,40 +76,126 @@
 	color: #e06c75;
 }
 
-/* The bar runs to BLACKOUT_LOAD, so the mark at its midpoint is 100% capacity
-   and the right half is the brownout region. Capped in width because stretched
-   across a wide viewport a healthy network is a sliver on a mostly empty rail. */
-.flowy-loadbar {
+/* ---- Bus voltage gauge ----
+   The bar length is the terminal voltage as a fraction of open-circuit, so the
+   empty space on the right is literally the volts that have sagged away. */
+
+.flowy-bus {
+	margin: 9px 0 8px;
+	max-width: 460px;
+}
+
+.flowy-bus-readout {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+	margin-bottom: 5px;
+}
+
+.flowy-bus-volts {
+	font-size: 21px;
+	font-weight: 700;
+	font-variant-numeric: tabular-nums;
+	letter-spacing: -0.01em;
+}
+
+.flowy-bus-of {
+	font-size: 12px;
+	opacity: 0.45;
+	font-variant-numeric: tabular-nums;
+}
+
+.flowy-bus-band {
+	margin-left: auto;
+	font-size: 11px;
+	text-transform: uppercase;
+	letter-spacing: 0.08em;
+	font-weight: 700;
+}
+
+.flowy-bus-gauge {
 	position: relative;
-	height: 5px;
-	width: 100%;
-	max-width: 420px;
-	margin: 9px 0;
-	border-radius: 3px;
+	height: 7px;
+	border-radius: 4px;
 	background: rgba(255, 255, 255, 0.07);
 	overflow: hidden;
 }
 
-.flowy-loadbar-fill {
+.flowy-bus-fill {
 	height: 100%;
-	background: #5aa9e6;
-	transition: width 0.35s ease;
+	transition: width 0.3s ease, background 0.3s ease;
 }
 
-.flowy-loadbar-fill.warn {
-	background: #e8a33d;
-}
-.flowy-loadbar-fill.bad {
-	background: #e06c75;
-}
-
-/* Tick marking 100% of capacity — everything past it is the brownout region. */
-.flowy-loadbar-mark {
+/* Where the undervoltage protection gives up. */
+.flowy-bus-trip {
 	position: absolute;
 	top: 0;
 	bottom: 0;
-	width: 1px;
-	background: rgba(255, 255, 255, 0.4);
+	width: 2px;
+	background: rgba(224, 108, 117, 0.75);
+}
+
+.tone-ok {
+	color: #8fd6a8;
+}
+.flowy-bus-fill.tone-ok {
+	background: #5aa9e6;
+}
+
+.tone-brownout {
+	color: #e8a33d;
+}
+.flowy-bus-fill.tone-brownout {
+	background: #e8a33d;
+}
+
+.tone-severe {
+	color: #e8794b;
+}
+.flowy-bus-fill.tone-severe {
+	background: #e8794b;
+}
+
+.tone-blackout {
+	color: #e06c75;
+}
+.flowy-bus-fill.tone-blackout {
+	background: #e06c75;
+}
+
+/* While the bus is down the panel itself flickers, at a rate and depth that
+   tracks the band — the same guttering the canvas is doing, so the HUD and the
+   grid read as one failing system rather than two separate widgets. */
+@keyframes flowy-gutter {
+	0%, 100% { opacity: 1; }
+	17% { opacity: 0.82; }
+	23% { opacity: 1; }
+	54% { opacity: 0.7; }
+	58% { opacity: 0.95; }
+	71% { opacity: 0.55; }
+	76% { opacity: 1; }
+}
+
+.flowy-hud.band-brownout .flowy-bus-readout {
+	animation: flowy-gutter 2.7s infinite;
+}
+
+.flowy-hud.band-severe .flowy-bus-readout {
+	animation: flowy-gutter 1.3s infinite;
+}
+
+.flowy-hud.band-severe {
+	box-shadow: inset 0 -1px 0 rgba(232, 121, 75, 0.5);
+}
+
+.flowy-hud.band-blackout {
+	box-shadow: inset 0 -1px 0 rgba(224, 108, 117, 0.6);
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.flowy-hud .flowy-bus-readout {
+		animation: none;
+	}
 }
 
 .flowy-hud-actions {
