@@ -1,5 +1,4 @@
 import {
-	MAX_LINK_DIST,
 	SAG_BROWNOUT,
 	SAG_SEVERE,
 	SAG_TRIP,
@@ -52,10 +51,11 @@ export default function HUD() {
 	const levels = useFlowy((s) => s.levels);
 	const stored = useFlowy((s) => s.stored);
 	const tripped = useFlowy((s) => s.tripped);
-	const mode = useFlowy((s) => s.mode);
+	const offers = useFlowy((s) => s.offers);
+	const history = useFlowy((s) => s.history);
 	const notice = useFlowy((s) => s.notice);
-	const setMode = useFlowy((s) => s.setMode);
 	const buy = useFlowy((s) => s.buy);
+	const undo = useFlowy((s) => s.undo);
 	const resetBreaker = useFlowy((s) => s.resetBreaker);
 
 	const openVolts = sourceVolts(levels.volts);
@@ -129,10 +129,16 @@ export default function HUD() {
 
 			<div className="flowy-hud-row flowy-hud-actions">
 				<button
-					className={`flowy-btn${mode === 'add' ? ' active' : ''}`}
-					onClick={() => setMode(mode === 'add' ? 'select' : 'add')}
+					className="flowy-btn undo"
+					disabled={history.length === 0}
+					onClick={undo}
 				>
-					{mode === 'add' ? 'Done adding' : 'Add connection'}
+					Undo
+					{history.length > 0 && (
+						<span className="flowy-cost">
+							+{history[history.length - 1].paid}c
+						</span>
+					)}
 				</button>
 
 				{(Object.keys(UPGRADE_LABELS) as UpgradeKind[]).map((kind) => {
@@ -166,9 +172,9 @@ export default function HUD() {
 							? `The bus is down to ${fmt(terminal, 1)} V. Taps earn in proportion to what reaches them, and the far grid is falling below its ${6} V wake threshold.`
 							: sag >= SAG_BROWNOUT
 								? `Browning out — ${fmt(solution.totalAmps, 2)} A through ${fmt(ohms, 2)} Ω is costing ${fmt(openVolts - terminal, 1)} V at the terminal.`
-								: mode === 'add'
-									? `Every connection within ${MAX_LINK_DIST}u is on offer, priced at its midpoint. Tap one, then confirm.`
-									: 'Drag to pan, scroll to zoom, h to return to the source.')}
+								: offers.length > 0
+									? 'Tap any ringed node to wire it — the price on the ring is what it costs.'
+									: 'Tap a node to wire from it. Drag to pan, scroll to zoom.')}
 			</div>
 		</div>
 	);

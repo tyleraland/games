@@ -174,7 +174,23 @@ export const COLORS = {
 	select: '#f4f1de',
 	text: '#c7d0dd',
 	/** Connections on offer — distinct from both rails so offers never read as live. */
-	ghost: '#6fd6c4',
+	offer: '#6fd6c4',
 	/** An offer you cannot currently afford. */
-	ghostPoor: '#6b7488',
+	offerPoor: '#6b7488',
+	/** The node you are currently wiring from. */
+	anchor: '#f4f1de',
 };
+
+/* ------------------------------------------------------------------ */
+/* Building                                                            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * How many builds back the Undo stack remembers. Deep enough that a run of
+ * mis-taps is recoverable, shallow enough that it stays a mis-tap eraser
+ * rather than a free rewind of the whole game.
+ */
+export const UNDO_DEPTH = 12;
+
+/** How long the surge along a freshly built run lasts, in ms. */
+export const BUILD_FLASH_MS = 520;

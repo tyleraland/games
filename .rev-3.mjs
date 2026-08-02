@@ -1,0 +1,12 @@
+import { open, tapWorld, w2p } from './.rev-lib.mjs';
+const { browser, page } = await open();
+const snap = async () => await page.evaluate(() => { const s = window.flowy.getState(); return { coins: +s.coins.toFixed(1), income: +s.meters.incomeC.toFixed(2), edges: [...(s.edges instanceof Map ? s.edges.values() : Object.values(s.edges))].map(e=>`${e.from??e.a}->${e.to??e.b}${e.polarity??""}`), anchor: s.selection, notice: s.notice }; });
+console.log('0', await snap());
+await tapWorld(page, 1, -1, 700); console.log('t1', await snap());
+await tapWorld(page, 2, -2, 700); console.log('t2', await snap());
+await page.screenshot({ path: '/home/user/games/.rev-shot/04-before-loop.png' });
+await tapWorld(page, 0, 0, 900); console.log('t3', await snap());
+await page.screenshot({ path: '/home/user/games/.rev-shot/05-loop.png' });
+await page.waitForTimeout(2000);
+console.log('settled', await snap());
+await browser.close();

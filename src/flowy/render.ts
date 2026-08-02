@@ -2,7 +2,9 @@
 // owns no state of its own, so the rAF loop can call it as often as it likes.
 
 import {
+	BUILD_FLASH_MS,
 	COLORS,
+	MAX_LINK_DIST,
 	MIN_VOLTS,
 	PULSE_HOPS_PER_BEAT,
 	SAG_BROWNOUT,
@@ -11,7 +13,7 @@ import {
 	sagSeverity,
 } from './config';
 import type { Solution } from './sim';
-import type { FlowyEdge, GhostLink } from './world';
+import type { FlowyEdge, LinkOffer } from './world';
 import { getNode, nodesInRect } from './world';
 
 export interface Camera {
@@ -26,16 +28,22 @@ export interface RenderInput {
 	camera: Camera;
 	edges: Record<string, FlowyEdge>;
 	solution: Solution;
-	selection: { type: 'node' | 'edge' | 'ghost'; id: string } | null;
+	selection: { type: 'node' | 'edge'; id: string } | null;
 	hoverNode: string | null;
-	/** Connections on offer, drawn only while in add mode. */
-	ghosts: GhostLink[];
-	/** Whether the player can afford each ghost, for the offer styling. */
+	/** The node being wired from. Every offer starts here. */
+	anchor: string | null;
+	/** Runs buyable from the anchor, ringed on their far end. */
+	offers: LinkOffer[];
+	/** Whether the player can afford each offer, for the ring styling. */
 	coins: number;
 	tripped: boolean;
 	/** Fraction of open-circuit voltage the source has lost, 0..1. */
 	sag: number;
+	/** The run just bought, so the surge can be painted along it. */
+	lastBuilt: { id: string; at: number } | null;
 	timeMs: number;
+	/** The same clock `lastBuilt.at` was stamped from. */
+	nowMs: number;
 }
 
 /* ------------------------------------------------------------------ */
@@ -125,18 +133,26 @@ export function draw(
 
 	drawGrid(ctx, cam, w, h, x0, y0, x1, y1);
 
+	// The reach limit sits under everything: it is context, not an object.
+	drawReach(ctx, cam, w, h, scene);
+
 	// Connections first so nodes sit on top of their own wires.
 	for (const edge of Object.values(edges)) {
 		drawEdge(ctx, cam, w, h, edge, scene);
 	}
 
-	drawGhosts(ctx, cam, w, h, scene, x0, y0, x1, y1);
+	drawOfferRuns(ctx, cam, w, h, scene);
 
 	for (const node of nodesInRect(x0 - 1, y0 - 1, x1 + 1, y1 + 1)) {
 		drawNode(ctx, cam, w, h, node.id, scene);
 	}
 
+	// Rings and prices go over the nodes they belong to, so nothing is hidden
+	// behind a glow at the moment the player is aiming at it.
+	drawOfferRings(ctx, cam, w, h, scene);
+
 	if (!input.tripped) drawPulses(ctx, cam, w, h, scene);
+	drawBuildSurge(ctx, cam, w, h, scene);
 
 	// Panning far afield is the whole exploration loop, so keep a way home.
 	drawSourceCompass(ctx, cam, w, h);
@@ -371,7 +387,26 @@ function drawNode(
 		ctx.stroke();
 	}
 
-	if (selected || hovered) {
+	// The anchor wears a broken reticle rather than another solid ring. The
+	// source already has a solid ring of its own, and on a fresh board the two
+	// sit on the same node — a gapped collar reads as a cursor, not as another
+	// property of the node.
+	if (input.anchor === id) {
+		const rr = r * 2.05;
+		ctx.save();
+		ctx.strokeStyle = COLORS.anchor;
+		ctx.lineWidth = 3.2;
+		ctx.lineCap = 'round';
+		ctx.shadowColor = COLORS.anchor;
+		ctx.shadowBlur = 9;
+		for (let i = 0; i < 4; i++) {
+			const start = i * (Math.PI / 2) + Math.PI / 8;
+			ctx.beginPath();
+			ctx.arc(sx, sy, rr, start, start + Math.PI / 4);
+			ctx.stroke();
+		}
+		ctx.restore();
+	} else if (selected || hovered) {
 		ctx.strokeStyle = selected ? COLORS.select : withAlpha(COLORS.select, 0.45);
 		ctx.lineWidth = 2;
 		ctx.beginPath();
@@ -395,113 +430,209 @@ function drawNode(
 	}
 }
 
-/** Radius of a ghost's tap target. Generous, because this is played on phones. */
-export const ghostHandleRadius = (cam: Camera) => Math.max(9, cam.zoom * 0.15);
+/**
+ * Radius of an offer's tap target, which is the ring drawn around the node the
+ * run would reach. Floored well above the 44px guideline, because the whole
+ * game is played by putting a thumb on one of these.
+ */
+export const offerRingRadius = (cam: Camera) => Math.max(22, cam.zoom * 0.4);
 
-/** Screen position of a ghost's handle — shared with the canvas hit-test. */
-export function ghostHandle(
-	ghost: GhostLink,
+/** Screen position of an offer's tap target — shared with the canvas hit-test. */
+export function offerAt(
+	offer: LinkOffer,
 	cam: Camera,
 	w: number,
 	h: number,
 ): [number, number] | null {
-	const from = getNode(ghost.from);
-	const to = getNode(ghost.to);
-	if (!from || !to) return null;
-	const [ax, ay] = worldToScreen(from.x, from.y, cam, w, h);
-	const [bx, by] = worldToScreen(to.x, to.y, cam, w, h);
-	return [(ax + bx) / 2, (ay + by) / 2];
+	const target = getNode(offer.target);
+	if (!target) return null;
+	return worldToScreen(target.x, target.y, cam, w, h);
 }
 
-/**
- * The connections on offer: a dashed run with a tappable handle at its
- * midpoint carrying the price. Direction is baked in by whoever built the
- * offer, and the arrow says which way it will feed, so there is no way to lay
- * a run backwards by clicking the endpoints in the wrong order.
- */
-function drawGhosts(
+/** A shared, gentle breath so every offer on screen pulses as one set. */
+const offerPulse = (timeMs: number) => 0.72 + 0.28 * Math.sin(timeMs / 380);
+
+/** The build radius around the anchor, so the reach rule is visible not memorised. */
+function drawReach(
 	ctx: CanvasRenderingContext2D,
 	cam: Camera,
 	w: number,
 	h: number,
 	input: Scene,
-	x0: number,
-	y0: number,
-	x1: number,
-	y1: number,
 ) {
-	if (input.ghosts.length === 0) return;
-	const r = ghostHandleRadius(cam);
+	if (!input.anchor) return;
+	const node = getNode(input.anchor);
+	if (!node) return;
+	const [sx, sy] = worldToScreen(node.x, node.y, cam, w, h);
+	ctx.save();
+	ctx.setLineDash([3, 7]);
+	ctx.lineWidth = 1;
+	ctx.strokeStyle = withAlpha(COLORS.offer, 0.16);
+	ctx.beginPath();
+	ctx.arc(sx, sy, MAX_LINK_DIST * cam.zoom, 0, Math.PI * 2);
+	ctx.stroke();
+	ctx.restore();
+}
 
-	for (const ghost of input.ghosts) {
-		const from = getNode(ghost.from);
-		const to = getNode(ghost.to);
-		if (!from || !to) continue;
-		// Cull anything wholly outside the view.
-		if (
-			Math.max(from.x, to.x) < x0 - 1 ||
-			Math.min(from.x, to.x) > x1 + 1 ||
-			Math.max(from.y, to.y) < y0 - 1 ||
-			Math.min(from.y, to.y) > y1 + 1
-		)
-			continue;
+/** The dashed run each offer would lay, drawn under the nodes. */
+function drawOfferRuns(
+	ctx: CanvasRenderingContext2D,
+	cam: Camera,
+	w: number,
+	h: number,
+	input: Scene,
+) {
+	if (input.offers.length === 0 || !input.anchor) return;
+	const anchor = getNode(input.anchor);
+	if (!anchor) return;
+	const [ax, ay] = worldToScreen(anchor.x, anchor.y, cam, w, h);
+	const breath = offerPulse(input.timeMs);
 
-		const selected =
-			input.selection?.type === 'ghost' && input.selection.id === ghost.id;
-		const affordable = input.coins >= ghost.cost;
-		const tint = selected
-			? COLORS.select
-			: affordable
-				? COLORS.ghost
-				: COLORS.ghostPoor;
-
-		const [ax, ay] = worldToScreen(from.x, from.y, cam, w, h);
-		const [bx, by] = worldToScreen(to.x, to.y, cam, w, h);
+	for (const offer of input.offers) {
+		const target = getNode(offer.target);
+		if (!target) continue;
+		const affordable = input.coins >= offer.cost;
+		const [bx, by] = worldToScreen(target.x, target.y, cam, w, h);
 
 		ctx.save();
-		ctx.setLineDash(selected ? [] : [5, 5]);
-		ctx.lineWidth = selected ? 2.6 : 1.3;
-		ctx.strokeStyle = withAlpha(tint, selected ? 0.95 : affordable ? 0.4 : 0.22);
+		ctx.setLineDash([4, 6]);
+		ctx.lineWidth = 1.4;
+		ctx.strokeStyle = withAlpha(
+			affordable ? COLORS.offer : COLORS.offerPoor,
+			affordable ? 0.14 + 0.16 * breath : 0.1,
+		);
 		ctx.beginPath();
 		ctx.moveTo(ax, ay);
 		ctx.lineTo(bx, by);
 		ctx.stroke();
 		ctx.restore();
+	}
+}
 
-		const mx = (ax + bx) / 2;
-		const my = (ay + by) / 2;
+/**
+ * The offers themselves: a ring around every node one tap would reach, wearing
+ * its price. The tap target *is* the destination, so buying a connection is the
+ * same gesture as pointing at where you want it to go — no midpoint handle to
+ * find, no panel to confirm through.
+ */
+function drawOfferRings(
+	ctx: CanvasRenderingContext2D,
+	cam: Camera,
+	w: number,
+	h: number,
+	input: Scene,
+) {
+	if (input.offers.length === 0) return;
+	const ring = offerRingRadius(cam);
+	const breath = offerPulse(input.timeMs);
 
-		// The handle. A selected offer shows an arrow instead of a price, so the
-		// direction it will feed is unmistakable at the moment of confirming.
+	// Two passes: every ring, then every price. Offers sit a single grid unit
+	// apart at times, and a ring painted later must not clip the plate of the
+	// offer next to it — the price is the one thing that has to stay readable.
+	const onScreen = [];
+	for (const offer of input.offers) {
+		const target = getNode(offer.target);
+		if (!target) continue;
+		const [sx, sy] = worldToScreen(target.x, target.y, cam, w, h);
+		if (sx < -ring || sy < -ring || sx > w + ring || sy > h + ring) continue;
+		onScreen.push({ offer, sx, sy, affordable: input.coins >= offer.cost });
+	}
+
+	for (const { sx, sy, affordable } of onScreen) {
+		const tint = affordable ? COLORS.offer : COLORS.offerPoor;
 		ctx.save();
-		ctx.fillStyle = withAlpha(COLORS.background, 0.9);
-		ctx.beginPath();
-		ctx.arc(mx, my, r, 0, Math.PI * 2);
-		ctx.fill();
-		ctx.lineWidth = selected ? 2.4 : 1.4;
-		ctx.strokeStyle = withAlpha(tint, selected ? 1 : affordable ? 0.7 : 0.4);
-		ctx.stroke();
-
-		if (selected) {
-			const angle = Math.atan2(by - ay, bx - ax);
-			ctx.translate(mx, my);
-			ctx.rotate(angle);
-			ctx.fillStyle = tint;
-			ctx.beginPath();
-			ctx.moveTo(r * 0.62, 0);
-			ctx.lineTo(-r * 0.42, r * 0.46);
-			ctx.lineTo(-r * 0.42, -r * 0.46);
-			ctx.closePath();
-			ctx.fill();
-		} else if (cam.zoom >= 34) {
-			ctx.fillStyle = withAlpha(tint, affordable ? 0.95 : 0.5);
-			ctx.font = `600 ${Math.max(9, r * 0.95)}px ui-monospace, monospace`;
-			ctx.textAlign = 'center';
-			ctx.textBaseline = 'middle';
-			ctx.fillText(String(ghost.cost), mx, my + 0.5);
+		ctx.lineWidth = affordable ? 2.2 : 1.4;
+		ctx.strokeStyle = withAlpha(tint, affordable ? 0.45 + 0.45 * breath : 0.3);
+		if (affordable) {
+			ctx.shadowColor = tint;
+			ctx.shadowBlur = 7 * breath;
 		}
+		ctx.beginPath();
+		ctx.arc(sx, sy, ring, 0, Math.PI * 2);
+		ctx.stroke();
 		ctx.restore();
 	}
+
+	if (cam.zoom < 30) return;
+
+	for (const { offer, sx, sy, affordable } of onScreen) {
+		const tint = affordable ? COLORS.offer : COLORS.offerPoor;
+		// The price rides above the ring on its own plate, so it stays legible
+		// over the grid, over a wire, or over a lit node's glow.
+		const label = `${offer.cost}c`;
+		const font = Math.max(10, Math.min(13, cam.zoom * 0.21));
+		ctx.save();
+		ctx.font = `700 ${font}px ui-monospace, monospace`;
+		ctx.textAlign = 'center';
+		ctx.textBaseline = 'middle';
+		const padX = 5;
+		const tw = ctx.measureText(label).width + padX * 2;
+		const th = font + 5;
+		const py = sy - ring - th * 0.62;
+		ctx.fillStyle = withAlpha(COLORS.background, 0.88);
+		ctx.beginPath();
+		ctx.roundRect(sx - tw / 2, py - th / 2, tw, th, th / 2);
+		ctx.fill();
+		ctx.strokeStyle = withAlpha(tint, affordable ? 0.55 : 0.3);
+		ctx.lineWidth = 1;
+		ctx.stroke();
+		ctx.fillStyle = withAlpha(tint, affordable ? 1 : 0.55);
+		ctx.fillText(label, sx, py + 0.5);
+		ctx.restore();
+	}
+}
+
+/**
+ * A bright surge running the length of a run the instant it is bought. The
+ * purchase has no confirm step, so this is what tells you it happened — and it
+ * shows which way the new wire feeds while it does.
+ */
+function drawBuildSurge(
+	ctx: CanvasRenderingContext2D,
+	cam: Camera,
+	w: number,
+	h: number,
+	input: Scene,
+) {
+	const built = input.lastBuilt;
+	if (!built) return;
+	const age = input.nowMs - built.at;
+	if (age < 0 || age > BUILD_FLASH_MS) return;
+	const edge = input.edges[built.id];
+	if (!edge) return;
+	const from = getNode(edge.from);
+	const to = getNode(edge.to);
+	if (!from || !to) return;
+
+	const t = age / BUILD_FLASH_MS;
+	const fade = 1 - t;
+	const [ax, ay] = worldToScreen(from.x, from.y, cam, w, h);
+	const [bx, by] = worldToScreen(to.x, to.y, cam, w, h);
+
+	ctx.save();
+	ctx.lineCap = 'round';
+	ctx.lineWidth = 2 + 5 * fade;
+	ctx.strokeStyle = withAlpha(COLORS.offer, 0.75 * fade);
+	ctx.shadowColor = COLORS.offer;
+	ctx.shadowBlur = 14 * fade;
+	ctx.beginPath();
+	ctx.moveTo(ax, ay);
+	ctx.lineTo(bx, by);
+	ctx.stroke();
+
+	// The head of the surge, travelling the way the charge will.
+	const ease = 1 - (1 - t) * (1 - t);
+	ctx.fillStyle = '#fff6e8';
+	ctx.beginPath();
+	ctx.arc(
+		ax + (bx - ax) * ease,
+		ay + (by - ay) * ease,
+		3 + 5 * fade,
+		0,
+		Math.PI * 2,
+	);
+	ctx.fill();
+	ctx.restore();
 }
 
 /**

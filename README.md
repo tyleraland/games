@@ -63,23 +63,31 @@ current, every wire drops voltage, and the source only has so many watts.
 
 ### How to play
 
+- **Tap a node** to wire from it. It becomes the *anchor*, and every node it
+  could reach lights up with a ring and a price. The source starts anchored, so
+  a fresh board is already showing you its opening moves.
+- **Tap a ring** to lay that run. It is bought there and then — no confirm step
+  — and the anchor walks to the far end, so extending a line is one tap per
+  node. **Undo** in the HUD (or <kbd>z</kbd>) walks the last build back at full
+  price.
+- Tapping the anchor again clears it, which is also how you reach a node that is
+  currently wearing a ring. Tap **empty space** to clear everything.
 - **Drag** to pan, **scroll** to zoom, <kbd>h</kbd> to fly back to the source.
   An arrow at the screen edge points home when the source is off-view.
-- **Add connection** (or <kbd>a</kbd>) overlays every connection you could buy
-  as a dashed run with its price on a handle at the midpoint. Tap a handle to
-  see what it costs and which way it would feed, then **Confirm**. You stay in
-  add mode with a refreshed set of offers, so laying a long run is
-  tap-confirm-tap-confirm. <kbd>Esc</kbd> to stop.
-- **Tap** any node or connection to inspect its volts, amps, ohms and watts.
-- Selected connections can be **flipped** between `+` and `−`, **reversed**,
-  **disabled**, or torn out for half their cost.
+- **Tap** a connection to inspect its volts, amps, ohms and watts. Selected
+  connections can be **flipped** between `+` and `−`, **reversed**, **disabled**,
+  or torn out for half their cost.
 - Spend coins on **Voltage**, **Capacity** and **Battery** upgrades.
 
-Offers always run *outward* — from a node already on the network to one within
-reach, or from the better-fed end when both are already wired. Direction is
-decided by the offer rather than by which endpoint you happened to tap first,
-so a run cannot be laid backwards. Nothing can point into the source: it is the
-root of every supply path, so a connection into it could never carry anything.
+Because any node can be anchored with one tap, every legal pair is always two
+taps apart: a second route into an already-fed node, a closed loop, or a run
+laid from a dark node back into the grid are all the same gesture as extending
+a line.
+
+Which way a run points is decided by the offer, not by the order you tapped:
+it always runs from the better-fed end, so a run cannot be laid backwards.
+Nothing can point into the source — it is the root of every supply path, so a
+connection into it could never carry anything.
 
 ### The model
 

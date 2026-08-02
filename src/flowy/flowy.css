@@ -26,6 +26,16 @@
 	cursor: crosshair;
 }
 
+/* On a wide screen the sheet is nothing at all — the inspector is a plain
+   sibling of the canvas, exactly as it was. */
+.flowy-sheet {
+	display: contents;
+}
+
+.flowy-sheet-tab {
+	display: none;
+}
+
 /* ---- HUD ---- */
 
 .flowy-hud {
@@ -238,6 +248,13 @@
 	color: #e06c75;
 }
 
+/* Undo is the safety net that lets a purchase happen without a confirm step,
+   so it is always present and always in the same place. */
+.flowy-btn.undo:not(:disabled) {
+	border-color: rgba(111, 214, 196, 0.5);
+	color: #6fd6c4;
+}
+
 .flowy-btn.primary {
 	background: #6fd6c4;
 	border-color: #6fd6c4;
@@ -313,6 +330,18 @@
 	background: rgba(143, 214, 168, 0.16);
 	color: #8fd6a8;
 	opacity: 1;
+}
+
+/* What the anchor affords, stated before any of the physics readouts. */
+.flowy-wiring {
+	margin: 12px 0 2px;
+	padding: 8px 10px;
+	border-radius: 6px;
+	background: rgba(111, 214, 196, 0.09);
+	border: 1px solid rgba(111, 214, 196, 0.25);
+	font-size: 12.5px;
+	line-height: 1.5;
+	color: #a8e5d9;
 }
 
 .flowy-blurb {
@@ -455,25 +484,83 @@
 	flex-shrink: 0;
 }
 
-/* On narrow screens the inspector drops below the grid, and the HUD has to stop
-   eating the viewport — the meters wrapped into six stacked rows on a phone,
-   leaving barely a strip of grid to actually play on. Both rows scroll
+/* On narrow screens the board takes the whole viewport and the inspector
+   becomes a sheet lying over the bottom of it, collapsed to a single tappable
+   line. Wiring happens on the canvas, so the readouts are reference rather than
+   controls and do not deserve 40% of a phone screen. The HUD rows scroll
    sideways instead of wrapping, so everything stays reachable on one line. */
 @media (max-width: 720px) {
 	.flowy-body {
-		flex-direction: column;
+		position: relative;
+		display: block;
 	}
 
 	.flowy-canvas {
-		flex: 1 1 58%;
+		position: absolute;
+		inset: 0;
+		width: 100%;
+		height: 100%;
 	}
 
-	.flowy-inspector {
+	.flowy-sheet {
+		position: absolute;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		display: flex;
+		flex-direction: column;
+		max-height: 62%;
+		background: #0e131c;
+		border-top: 1px solid rgba(255, 255, 255, 0.12);
+		box-shadow: 0 -10px 26px rgba(0, 0, 0, 0.45);
+	}
+
+	.flowy-sheet-tab {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		width: 100%;
+		min-height: 46px;
+		padding: 6px 14px;
+		background: none;
+		border: none;
+		color: inherit;
+		font: inherit;
+		font-size: 12.5px;
+		text-align: left;
+		cursor: pointer;
+	}
+
+	.flowy-sheet-title {
+		flex: 1;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		font-weight: 600;
+	}
+
+	.flowy-sheet-caret {
+		flex-shrink: 0;
+		font-size: 11px;
+		letter-spacing: 0.06em;
+		text-transform: uppercase;
+		opacity: 0.55;
+	}
+
+	/* Collapsed by default: the tab is the whole sheet. */
+	.flowy-sheet .flowy-inspector {
+		display: none;
+	}
+
+	.flowy-body.sheet-open .flowy-sheet .flowy-inspector {
+		display: block;
 		width: auto;
-		flex: 1 1 42%;
-		padding: 12px;
+		flex: 1;
+		min-height: 0;
+		padding: 0 14px 14px;
 		border-left: none;
-		border-top: 1px solid rgba(255, 255, 255, 0.08);
+		overflow-y: auto;
 	}
 
 	.flowy-hud {
@@ -517,8 +604,10 @@
 		padding-bottom: 2px;
 	}
 
+	/* Thumb-sized: every one of these is a real target on a phone. */
 	.flowy-btn {
-		padding: 5px 9px;
+		min-height: 44px;
+		padding: 5px 12px;
 		font-size: 12px;
 		white-space: nowrap;
 	}

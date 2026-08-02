@@ -8,6 +8,7 @@ import {
 	SOURCE_ID,
 	START_COINS,
 	TICK_MS,
+	UNDO_DEPTH,
 	batteryJoules,
 	batteryWatts,
 	sourceMaxWatts,
@@ -19,19 +20,30 @@ import {
 import { solve, type Solution } from './sim';
 import {
 	getNode,
-	ghostLinks,
 	linkProblem,
 	makeEdge,
+	offersFrom,
 	type FlowyEdge,
-	type GhostLink,
+	type LinkOffer,
 } from './world';
 
-/** What the player currently has picked, for the inspector panel. */
+/**
+ * What the player currently has picked. A picked *node* is also the anchor —
+ * the point every offered run comes from — so selecting and wiring are the same
+ * act rather than two modes fighting over the same tap.
+ */
 export type Selection =
 	| { type: 'node'; id: string }
 	| { type: 'edge'; id: string }
-	| { type: 'ghost'; id: string }
 	| null;
+
+/** One purchase, kept so a mis-tap can be walked back. */
+interface BuildRecord {
+	edgeId: string;
+	/** Where the anchor was standing before the build, so undo puts it back. */
+	anchor: string | null;
+	paid: number;
+}
 
 /** Snapshot of the last beat, for the HUD. */
 export interface Meters {
@@ -84,21 +96,24 @@ interface FlowyState {
 	levels: Record<UpgradeKind, number>;
 	meters: Meters;
 
-	/** UI: 'select' inspects, 'add' overlays every connection you could buy. */
-	mode: 'select' | 'add';
 	selection: Selection;
-	/** The connections on offer while in add mode. Recomputed as the grid grows. */
-	ghosts: GhostLink[];
+	/** Every run buyable from the anchor right now. Empty when nothing is picked. */
+	offers: LinkOffer[];
+	/** Builds that can still be walked back, oldest first. */
+	history: BuildRecord[];
+	/** The run built most recently, for the surge the canvas paints along it. */
+	lastBuilt: { id: string; at: number } | null;
 	/** Transient message shown under the HUD (bad purchase, blackout, …). */
 	notice: string | null;
 
 	tick: () => void;
-	setMode: (mode: 'select' | 'add') => void;
 	select: (selection: Selection) => void;
-	/** Click a node: inspects it. */
+	/** Tap a node: make it the anchor, or drop the anchor if it already was. */
 	tapNode: (id: string) => void;
-	/** Buy the ghost currently selected. */
-	confirmGhost: () => void;
+	/** Tap a ringed node: buy the run it is offering, in one go. */
+	buildTo: (target: string) => void;
+	/** Walk back the most recent build at full price. */
+	undo: () => void;
 	flipPolarity: (id: string) => void;
 	/** Swap which end feeds which, when a run was laid the wrong way round. */
 	reverseLink: (id: string) => void;
@@ -109,19 +124,25 @@ interface FlowyState {
 	notify: (message: string | null) => void;
 }
 
+/** The anchor is simply whichever node is selected. */
+export const anchorOf = (selection: Selection) =>
+	selection?.type === 'node' ? selection.id : null;
+
 /**
- * The connections currently on offer. Everything the source can reach counts as
- * "on the network", plus the source itself, so a fresh game still has somewhere
- * to start.
+ * The runs on offer from the anchor. Recomputed whenever the selection, the
+ * graph or the solve moves, since all three change what is buyable and which
+ * way round it would run.
  */
-function buildGhosts(
+function buildOffers(
+	selection: Selection,
 	edges: Record<string, FlowyEdge>,
 	solution: Solution,
-): GhostLink[] {
-	const network = new Set<string>([SOURCE_ID, ...solution.order]);
+): LinkOffer[] {
+	const anchor = anchorOf(selection);
+	if (!anchor) return [];
 	const rankOf = new Map<string, number>();
 	solution.order.forEach((id, i) => rankOf.set(id, i));
-	return ghostLinks(network, edges, (id) => rankOf.get(id) ?? Infinity);
+	return offersFrom(anchor, edges, (id) => rankOf.get(id) ?? Infinity);
 }
 
 /**
@@ -154,9 +175,16 @@ export const useFlowy = create<FlowyState>((set, get) => ({
 	levels: { volts: 0, watts: 0, battery: 0 },
 	meters: NO_METERS,
 
-	mode: 'select',
+	// The source starts anchored, so a fresh board already shows its first moves
+	// ringed and priced with nothing to press first.
 	selection: { type: 'node', id: SOURCE_ID },
-	ghosts: [],
+	offers: buildOffers(
+		{ type: 'node', id: SOURCE_ID },
+		{},
+		resolve({}, { volts: 0, watts: 0, battery: 0 }, false),
+	),
+	history: [],
+	lastBuilt: null,
 	notice: null,
 
 	/* ---------------------------------------------------------------- */
@@ -209,11 +237,13 @@ export const useFlowy = create<FlowyState>((set, get) => ({
 		// Undervoltage trip: past SAG_TRIP the protective gear drops the load
 		// rather than let everything sit there cooking at half voltage.
 		if (!s.tripped && solution.sag > SAG_TRIP) {
+			const dark = resolve(s.edges, s.levels, true);
 			set({
 				tripped: true,
 				stored,
 				beat: s.beat + 1,
-				solution: resolve(s.edges, s.levels, true),
+				solution: dark,
+				offers: buildOffers(s.selection, s.edges, dark),
 				meters: { ...NO_METERS, openVolts, maxW: sourceMaxWatts(openVolts, ohms) },
 				notice:
 					'Blackout — undervoltage trip. Shed load or stiffen the source, then reset the breaker.',
@@ -258,56 +288,110 @@ export const useFlowy = create<FlowyState>((set, get) => ({
 	/* Player actions                                                    */
 	/* ---------------------------------------------------------------- */
 
-	setMode: (mode) => {
+	select: (selection) => {
 		const s = get();
 		set({
-			mode,
-			// Offers are only meaningful while you are shopping for one.
-			ghosts: mode === 'add' ? buildGhosts(s.edges, s.solution) : [],
-			selection: s.selection?.type === 'ghost' ? null : s.selection,
+			selection,
+			offers: buildOffers(selection, s.edges, s.solution),
 			notice: null,
 		});
 	},
 
-	select: (selection) => set({ selection }),
 	notify: (notice) => set({ notice }),
 
-	tapNode: (id) => set({ selection: { type: 'node', id }, notice: null }),
-
-	confirmGhost: () => {
+	tapNode: (id) => {
 		const s = get();
-		if (s.selection?.type !== 'ghost') return;
-		const ghost = s.ghosts.find((g) => g.id === s.selection!.id);
-		if (!ghost) return;
+		// Tapping the anchor again puts the board away — one tap to a clean grid,
+		// and the way to re-anchor somewhere that is currently wearing an offer.
+		const selection: Selection =
+			anchorOf(s.selection) === id ? null : { type: 'node', id };
+		set({
+			selection,
+			offers: buildOffers(selection, s.edges, s.solution),
+			notice: null,
+		});
+	},
 
-		const a = getNode(ghost.from);
-		const b = getNode(ghost.to);
+	/**
+	 * The core loop, in one tap. No confirm step: the price is already on the
+	 * ring, and Undo makes the mistake cheaper than the dialog would have been.
+	 *
+	 * The anchor then walks to the *downstream* end of the new run, so laying a
+	 * line outward is one tap per node, while a run built back into the anchor
+	 * leaves you standing where you were and free to carry on.
+	 */
+	buildTo: (target) => {
+		const s = get();
+		const offer = s.offers.find((o) => o.target === target);
+		if (!offer) return;
+
+		const a = getNode(offer.from);
+		const b = getNode(offer.to);
 		if (!a || !b) return;
 
 		// Re-check rather than trust the offer: the graph may have moved on.
 		const problem = linkProblem(a, b, s.edges);
 		if (problem) {
-			set({ notice: problem, selection: null });
+			set({ notice: problem });
 			return;
 		}
 		const edge = makeEdge(a, b);
 		if (s.coins < edge.paid) {
-			set({ notice: `Not enough coins — this run costs ${edge.paid}` });
+			set({
+				notice: `Not enough coins — that run costs ${edge.paid}, you have ${Math.floor(s.coins)}`,
+			});
 			return;
 		}
 
 		const edges = { ...s.edges, [edge.id]: edge };
 		const solution = resolve(edges, s.levels, s.tripped);
+		const selection: Selection = { type: 'node', id: edge.to };
+		const landed = getNode(edge.to);
 		set({
 			edges,
 			coins: s.coins - edge.paid,
 			solution,
-			// Stay in add mode with a refreshed set of offers, so laying a run is
-			// tap-confirm-tap-confirm rather than a trip back through the toolbar.
-			ghosts: buildGhosts(edges, solution),
-			selection: { type: 'edge', id: edge.id },
-			notice: null,
+			selection,
+			offers: buildOffers(selection, edges, solution),
+			history: [
+				...s.history.slice(-(UNDO_DEPTH - 1)),
+				{ edgeId: edge.id, anchor: anchorOf(s.selection), paid: edge.paid },
+			],
+			lastBuilt: { id: edge.id, at: performance.now() },
+			notice: `Wired the ${landed?.def.label.toLowerCase() ?? 'node'} at (${b.x}, ${b.y}) — ${edge.paid}c.`,
 		});
+	},
+
+	undo: () => {
+		const s = get();
+		const history = [...s.history];
+		// Skip anything that has since been torn out or reversed by hand.
+		while (history.length > 0) {
+			const record = history.pop()!;
+			const edge = s.edges[record.edgeId];
+			if (!edge) continue;
+
+			const edges = { ...s.edges };
+			delete edges[record.edgeId];
+			const solution = resolve(edges, s.levels, s.tripped);
+			const selection: Selection = record.anchor
+				? { type: 'node', id: record.anchor }
+				: null;
+			set({
+				edges,
+				// A full refund, not the teardown's half: this is unpicking a tap,
+				// not selling a wire back.
+				coins: s.coins + record.paid,
+				solution,
+				selection,
+				offers: buildOffers(selection, edges, solution),
+				history,
+				lastBuilt: null,
+				notice: `Undone — ${record.paid}c back.`,
+			});
+			return;
+		}
+		set({ history, notice: 'Nothing left to undo.' });
 	},
 
 	flipPolarity: (id) => {
@@ -318,7 +402,8 @@ export const useFlowy = create<FlowyState>((set, get) => ({
 			...s.edges,
 			[id]: { ...edge, polarity: (edge.polarity * -1) as 1 | -1 },
 		};
-		set({ edges, solution: resolve(edges, s.levels, s.tripped) });
+		const solution = resolve(edges, s.levels, s.tripped);
+		set({ edges, solution, offers: buildOffers(s.selection, edges, solution) });
 	},
 
 	reverseLink: (id) => {
@@ -345,11 +430,16 @@ export const useFlowy = create<FlowyState>((set, get) => ({
 		};
 		const edges = { ...rest, [flipped.id]: flipped };
 		const solution = resolve(edges, s.levels, s.tripped);
+		const selection: Selection = { type: 'edge', id: flipped.id };
 		set({
 			edges,
 			solution,
-			ghosts: s.mode === 'add' ? buildGhosts(edges, solution) : s.ghosts,
-			selection: { type: 'edge', id: flipped.id },
+			selection,
+			offers: buildOffers(selection, edges, solution),
+			// The wire survived, but under a new id, so the undo entry has to follow.
+			history: s.history.map((h) =>
+				h.edgeId === id ? { ...h, edgeId: flipped.id } : h,
+			),
 			notice: null,
 		});
 	},
@@ -360,11 +450,7 @@ export const useFlowy = create<FlowyState>((set, get) => ({
 		if (!edge) return;
 		const edges = { ...s.edges, [id]: { ...edge, enabled: !edge.enabled } };
 		const solution = resolve(edges, s.levels, s.tripped);
-		set({
-			edges,
-			solution,
-			ghosts: s.mode === 'add' ? buildGhosts(edges, solution) : s.ghosts,
-		});
+		set({ edges, solution, offers: buildOffers(s.selection, edges, solution) });
 	},
 
 	removeLink: (id) => {
@@ -374,12 +460,16 @@ export const useFlowy = create<FlowyState>((set, get) => ({
 		const edges = { ...s.edges };
 		delete edges[id];
 		const solution = resolve(edges, s.levels, s.tripped);
+		// Stand back on the feeding end rather than nowhere, so tearing out a bad
+		// run leaves you ready to lay the replacement.
+		const selection: Selection = { type: 'node', id: edge.from };
 		set({
 			edges,
 			coins: s.coins + Math.floor(edge.paid * REFUND_FRACTION),
-			selection: null,
+			selection,
 			solution,
-			ghosts: s.mode === 'add' ? buildGhosts(edges, solution) : s.ghosts,
+			offers: buildOffers(selection, edges, solution),
+			history: s.history.filter((h) => h.edgeId !== id),
 		});
 	},
 
@@ -391,25 +481,27 @@ export const useFlowy = create<FlowyState>((set, get) => ({
 			return;
 		}
 		const levels = { ...s.levels, [kind]: s.levels[kind] + 1 };
+		// Volts and stiffness both move the terminal, and the terminal is where
+		// every potential in the network is propagated from. Only the battery
+		// leaves the solve alone until the next beat.
+		const solution =
+			kind === 'battery' ? s.solution : resolve(s.edges, levels, s.tripped);
 		set({
 			levels,
 			coins: s.coins - cost,
-			// Volts and stiffness both move the terminal, and the terminal is
-			// where every potential in the network is propagated from. Only the
-			// battery leaves the solve alone until the next beat.
-			solution:
-				kind === 'battery'
-					? s.solution
-					: resolve(s.edges, levels, s.tripped),
+			solution,
+			offers: buildOffers(s.selection, s.edges, solution),
 			notice: null,
 		});
 	},
 
 	resetBreaker: () => {
 		const s = get();
+		const solution = resolve(s.edges, s.levels, false);
 		set({
 			tripped: false,
-			solution: resolve(s.edges, s.levels, false),
+			solution,
+			offers: buildOffers(s.selection, s.edges, solution),
 			notice: null,
 		});
 	},

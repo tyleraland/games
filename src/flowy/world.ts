@@ -246,68 +246,80 @@ export function linkProblem(
 	return null;
 }
 
-/** A connection the player could buy, offered up for inspection. */
-export interface GhostLink {
+/**
+ * A connection the player could buy right now, from the node they are wiring
+ * from. `target` is the node they tap to buy it; `from`/`to` are the electrical
+ * direction, which the offer decides rather than the tap order.
+ */
+export interface LinkOffer {
 	id: string;
+	/** The far end — the node that wears the ring and takes the tap. */
+	target: string;
 	from: string;
 	to: string;
 	length: number;
 	ohms: number;
 	cost: number;
+	/** True when the run points away from the anchor rather than back into it. */
+	outward: boolean;
 }
 
 /**
- * Every connection worth offering, given what is already wired up.
+ * Every connection buyable from one node — the whole set of moves available
+ * while that node is the anchor.
  *
- * Candidates always run *outward*: from a node already on the network to one
- * within reach. When both ends are already on it the connection is oriented
- * from the better-fed end, so a proposal can never point the wrong way up the
- * supply path — which is the whole reason for offering these rather than
- * letting the player pick two endpoints and hope they chose the right order.
+ * Scoping the offers to a single node is what keeps the board readable: a
+ * handful of rings around one point rather than every purchasable run in the
+ * network radiating at once. Nothing is withheld, because any node can be made
+ * the anchor with one tap, so every legal pair is still one hop away.
  *
- * `rank` is supply-tree distance from the source (Infinity for unreached
- * nodes), which is what decides "better-fed".
+ * Direction is decided here, from the better-fed end, so a run can never be
+ * laid backwards no matter which node the player happened to start from.
+ * `rank` is supply-tree order from the source (Infinity for unreached nodes).
  */
-export function ghostLinks(
-	network: Iterable<string>,
+export function offersFrom(
+	anchorId: string,
 	edges: Record<string, FlowyEdge>,
 	rank: (id: string) => number,
-	limit = 400,
-): GhostLink[] {
-	const found = new Map<string, GhostLink>();
+): LinkOffer[] {
+	const anchor = getNode(anchorId);
+	if (!anchor) return [];
 	const reach = Math.ceil(MAX_LINK_DIST);
+	const anchorRank = rank(anchorId);
+	const offers: LinkOffer[] = [];
 
-	for (const id of network) {
-		const from = getNode(id);
-		if (!from) continue;
-		for (let dy = -reach; dy <= reach; dy++) {
-			for (let dx = -reach; dx <= reach; dx++) {
-				if (dx === 0 && dy === 0) continue;
-				const to = nodeAt(from.x + dx, from.y + dy);
-				if (!to) continue;
-				if (linkProblem(from, to, edges)) continue;
+	for (let dy = -reach; dy <= reach; dy++) {
+		for (let dx = -reach; dx <= reach; dx++) {
+			if (dx === 0 && dy === 0) continue;
+			const other = nodeAt(anchor.x + dx, anchor.y + dy);
+			if (!other) continue;
+			// One wire per pair, whichever way round it already runs — otherwise
+			// the ring would still be sitting on a node you are already wired to.
+			if (
+				edges[edgeId(anchor.id, other.id)] ||
+				edges[edgeId(other.id, anchor.id)]
+			)
+				continue;
 
-				// Emit each pair once, from whichever end is closer to the source.
-				const a = rank(from.id);
-				const b = rank(to.id);
-				if (b < a || (b === a && to.id < from.id)) continue;
+			const outward = anchorRank <= rank(other.id);
+			const from = outward ? anchor : other;
+			const to = outward ? other : anchor;
+			if (linkProblem(from, to, edges)) continue;
 
-				const key = edgeId(from.id, to.id);
-				if (found.has(key)) continue;
-				const length = edgeLength(from, to);
-				found.set(key, {
-					id: key,
-					from: from.id,
-					to: to.id,
-					length,
-					ohms: length * WIRE_OHMS_PER_UNIT,
-					cost: linkCost(length),
-				});
-				if (found.size >= limit) return [...found.values()];
-			}
+			const length = edgeLength(anchor, other);
+			offers.push({
+				id: edgeId(from.id, to.id),
+				target: other.id,
+				from: from.id,
+				to: to.id,
+				length,
+				ohms: length * WIRE_OHMS_PER_UNIT,
+				cost: linkCost(length),
+				outward,
+			});
 		}
 	}
-	return [...found.values()];
+	return offers;
 }
 
 export function makeEdge(from: FlowyNode, to: FlowyNode): FlowyEdge {

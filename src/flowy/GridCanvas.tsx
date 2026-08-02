@@ -2,21 +2,18 @@ import { useCallback, useEffect, useRef } from 'react';
 import { CAMERA } from './config';
 import {
 	draw,
-	ghostHandle,
-	ghostHandleRadius,
 	nodeRadius,
+	offerAt,
+	offerRingRadius,
 	screenToWorld,
 	worldToScreen,
 	type Camera,
 } from './render';
-import { useFlowy } from './store';
-import { getNode, nodesInRect, type GhostLink } from './world';
+import { anchorOf, useFlowy } from './store';
+import { getNode, nodesInRect } from './world';
 
 /** A drag shorter than this many pixels counts as a click, not a pan. */
 const CLICK_SLOP = 5;
-
-/** Stable empty array, so the render input does not churn every frame. */
-const EMPTY_GHOSTS: GhostLink[] = [];
 
 /**
  * The grid view. Camera and pointer state live in refs rather than React state:
@@ -57,22 +54,25 @@ export default function GridCanvas() {
 		[],
 	);
 
-	/** Nearest offered connection whose handle is under a screen point. */
-	const pickGhost = useCallback(
+	/**
+	 * The offered run whose ring is under a screen point. Offers sit on their
+	 * destination node, so this deliberately outranks the plain node pick: while
+	 * a node is ringed and priced, tapping it means "wire me there".
+	 */
+	const pickOffer = useCallback(
 		(sx: number, sy: number, w: number, h: number): string | null => {
 			const cam = cameraRef.current;
-			const { mode, ghosts } = useFlowy.getState();
-			if (mode !== 'add') return null;
-			const grab = ghostHandleRadius(cam) + 4;
+			const { offers } = useFlowy.getState();
+			const grab = offerRingRadius(cam);
 			let best: string | null = null;
 			let bestDist = grab;
-			for (const ghost of ghosts) {
-				const at = ghostHandle(ghost, cam, w, h);
+			for (const offer of offers) {
+				const at = offerAt(offer, cam, w, h);
 				if (!at) continue;
 				const d = Math.hypot(sx - at[0], sy - at[1]);
 				if (d < bestDist) {
 					bestDist = d;
-					best = ghost.id;
+					best = offer.target;
 				}
 			}
 			return best;
@@ -140,11 +140,14 @@ export default function GridCanvas() {
 				solution: s.solution,
 				selection: s.selection,
 				hoverNode: hoverRef.current,
-				ghosts: s.mode === 'add' ? s.ghosts : EMPTY_GHOSTS,
+				anchor: anchorOf(s.selection),
+				offers: s.offers,
 				coins: s.coins,
 				tripped: s.tripped,
 				sag: s.solution.sag,
+				lastBuilt: s.lastBuilt,
 				timeMs: now - start,
+				nowMs: now,
 			});
 			frame = requestAnimationFrame(render);
 		};
@@ -204,11 +207,12 @@ export default function GridCanvas() {
 		if (drag?.moved) return; // that was a pan
 
 		const store = useFlowy.getState();
-		// Offers sit on top: while shopping, their handles win over what is under
-		// them, otherwise a ghost laid across a node would be unpickable.
-		const ghost = pickGhost(x, y, w, h);
-		if (ghost) {
-			store.select({ type: 'ghost', id: ghost });
+		// A ringed node is an offer first and a node second — that is the whole
+		// point of the ring. Tapping the anchor again clears it, which is how you
+		// get at a node that is currently wearing an offer.
+		const offer = pickOffer(x, y, w, h);
+		if (offer) {
+			store.buildTo(offer);
 			return;
 		}
 		const node = pickNode(x, y, w, h);
@@ -245,17 +249,16 @@ export default function GridCanvas() {
 		cam.y += wy - ny;
 	};
 
-	// Escape leaves add mode; Home flies back to the source.
+	// Keyboard is a desktop convenience only; everything here is reachable by tap.
 	useEffect(() => {
 		const onKey = (e: KeyboardEvent) => {
 			const s = useFlowy.getState();
-			if (e.key === 'Escape' && s.mode === 'add') s.setMode('select');
+			if (e.key === 'Escape') s.select(null);
 			if (e.key === 'Home' || e.key === 'h') {
 				cameraRef.current.x = 0.5;
 				cameraRef.current.y = 0.5;
 			}
-			if (e.key === 'a') s.setMode(s.mode === 'add' ? 'select' : 'add');
-			if (e.key === 'Enter' && s.selection?.type === 'ghost') s.confirmGhost();
+			if (e.key === 'z') s.undo();
 		};
 		window.addEventListener('keydown', onKey);
 		return () => window.removeEventListener('keydown', onKey);

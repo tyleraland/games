@@ -7,7 +7,7 @@ import {
 	SOURCE_ID,
 } from './config';
 import { useFlowy } from './store';
-import { getNode, type FlowyEdge, type GhostLink } from './world';
+import { getNode, type FlowyEdge } from './world';
 
 const fmt = (n: number, digits = 2) => n.toFixed(digits);
 
@@ -16,38 +16,24 @@ export default function Inspector() {
 	const selection = useFlowy((s) => s.selection);
 	const edges = useFlowy((s) => s.edges);
 	const solution = useFlowy((s) => s.solution);
-	const ghosts = useFlowy((s) => s.ghosts);
-	const mode = useFlowy((s) => s.mode);
+	const offers = useFlowy((s) => s.offers);
+	const coins = useFlowy((s) => s.coins);
 
 	if (!selection) {
 		return (
 			<aside className="flowy-inspector">
 				<div className="flowy-empty">
-					<h2>{mode === 'add' ? 'Pick a connection' : 'Nothing selected'}</h2>
+					<h2>Nothing selected</h2>
 					<p>
-						{mode === 'add' ? (
-							<>
-								Every connection you could buy is drawn dashed, priced at its
-								midpoint. Tap one to see what it would cost and which way it
-								would feed, then confirm. <kbd>Esc</kbd> to stop.
-							</>
-						) : (
-							<>
-								Tap a node or a connection to inspect it. Drag to pan, scroll to
-								zoom, press <kbd>h</kbd> to return to the source.
-							</>
-						)}
+						Tap any node to wire from it — everything within reach lights up with
+						a ring and a price, and tapping a ring lays the run. Tap a
+						connection to inspect it. Drag to pan, <kbd>h</kbd> to return to the
+						source.
 					</p>
 					<Legend />
 				</div>
 			</aside>
 		);
-	}
-
-	if (selection.type === 'ghost') {
-		const ghost = ghosts.find((g) => g.id === selection.id);
-		if (!ghost) return <aside className="flowy-inspector" />;
-		return <GhostPanel ghost={ghost} />;
 	}
 
 	if (selection.type === 'edge') {
@@ -65,6 +51,11 @@ export default function Inspector() {
 	const incoming = Object.values(edges).filter((e) => e.to === node.id);
 	const outgoing = Object.values(edges).filter((e) => e.from === node.id);
 	const feed = solution.parent.get(node.id);
+	const affordable = offers.filter((o) => coins >= o.cost);
+	const cheapest = affordable.reduce<number | null>(
+		(best, o) => (best === null || o.cost < best ? o.cost : best),
+		null,
+	);
 
 	return (
 		<aside className="flowy-inspector">
@@ -84,6 +75,24 @@ export default function Inspector() {
 					{live ? 'live' : 'dark'}
 				</span>
 			</header>
+
+			{/* The anchor state is the game's main verb, so say what it affords
+			    right at the top rather than burying it under the readouts. */}
+			<p className="flowy-wiring">
+				{offers.length === 0 ? (
+					<>Nothing left to reach from here — tap another node to wire from it.</>
+				) : affordable.length === 0 ? (
+					<>
+						{offers.length} within reach, none affordable yet. The cheapest wants{' '}
+						{Math.min(...offers.map((o) => o.cost))}c.
+					</>
+				) : (
+					<>
+						Wiring from here. {affordable.length} of {offers.length} ringed runs
+						are affordable, from {cheapest}c — tap a ring to lay one.
+					</>
+				)}
+			</p>
 
 			<p className="flowy-blurb">{node.def.blurb}</p>
 
@@ -151,76 +160,6 @@ export default function Inspector() {
 
 			<EdgeList title="Fed by" items={incoming} side="from" feed={feed} />
 			<EdgeList title="Feeds" items={outgoing} side="to" />
-		</aside>
-	);
-}
-
-/** A connection on offer: what it would cost, and what it would do. */
-function GhostPanel({ ghost }: { ghost: GhostLink }) {
-	const coins = useFlowy((s) => s.coins);
-	const solution = useFlowy((s) => s.solution);
-	const confirm = useFlowy((s) => s.confirmGhost);
-	const select = useFlowy((s) => s.select);
-
-	const from = getNode(ghost.from);
-	const to = getNode(ghost.to);
-	if (!from || !to) return <aside className="flowy-inspector" />;
-
-	const affordable = coins >= ghost.cost;
-	const feeding = solution.energized.has(from.id);
-	const alreadyLive = solution.order.includes(to.id);
-
-	return (
-		<aside className="flowy-inspector">
-			<header className="flowy-panel-head">
-				<div>
-					<h2>Add connection</h2>
-					<p className="flowy-coords">
-						({from.x}, {from.y}) → ({to.x}, {to.y})
-					</p>
-				</div>
-				<span className={`flowy-pill cost${affordable ? ' live' : ''}`}>
-					{ghost.cost} coins
-				</span>
-			</header>
-
-			<p className="flowy-blurb">
-				Charge would run from the {from.def.label.toLowerCase()} into the{' '}
-				{to.def.label.toLowerCase()}
-				{to.def.yield > 0 && ', which pays out once it is lit'}.
-				{!feeding &&
-					' The feeding end is dark right now, so nothing will move until it is lit.'}
-				{alreadyLive &&
-					' That end is already on the network — this would be a second route into it, idle unless it undercuts the current one, and opposing it if you flip the polarity.'}
-			</p>
-
-			<dl className="flowy-readout">
-				<Row label="Length" value={`${fmt(ghost.length)} u`} />
-				<Row label="Wire resistance" value={`${fmt(ghost.ohms)} Ω`} />
-				<Row label="Adds draw" value={`${fmt(to.def.draw, 3)} A`} />
-				<Row label="Node resistance" value={`${fmt(to.def.resistance)} Ω`} />
-				<Row label="Cost" value={`${ghost.cost} c`} />
-				<Row label="You have" value={`${fmt(coins, 1)} c`} />
-			</dl>
-
-			{!affordable && (
-				<p className="flowy-hint">
-					Short by {fmt(ghost.cost - coins, 1)} coins.
-				</p>
-			)}
-
-			<div className="flowy-actions">
-				<button
-					className="flowy-btn primary"
-					disabled={!affordable}
-					onClick={confirm}
-				>
-					Confirm — {ghost.cost} c
-				</button>
-				<button className="flowy-btn" onClick={() => select(null)}>
-					Cancel
-				</button>
-			</div>
 		</aside>
 	);
 }
