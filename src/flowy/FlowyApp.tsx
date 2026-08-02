@@ -7,20 +7,48 @@ import { useFlowy } from './store';
 import { getNode } from './world';
 import './flowy.css';
 
-/** One line naming what is selected, for the collapsed sheet on a phone. */
-function useSelectionSummary(): string {
+/**
+ * One line naming what is selected, for the collapsed sheet on a phone.
+ *
+ * This is the only line most players ever read, so it has to carry the warning
+ * rather than leave it behind the Details toggle: anchored on an unlit node,
+ * "8 of 8 runs affordable" is true and completely misleading, because none of
+ * those eight would carry a thing.
+ */
+function useSelectionSummary(): { text: string; dark: boolean } {
 	const selection = useFlowy((s) => s.selection);
 	const offers = useFlowy((s) => s.offers);
 	const coins = useFlowy((s) => s.coins);
+	const solution = useFlowy((s) => s.solution);
 
-	if (!selection) return 'Tap a node to wire from it';
-	if (selection.type === 'edge') return 'Connection selected';
+	if (!selection) return { text: 'Tap a node to wire from it', dark: false };
+	if (selection.type === 'edge')
+		return { text: 'Connection selected', dark: false };
 	const node = getNode(selection.id);
-	if (!node) return 'Nothing selected';
-	const affordable = offers.filter((o) => coins >= o.cost).length;
+	if (!node) return { text: 'Nothing selected', dark: false };
+
 	const where = `${node.def.label} (${node.x}, ${node.y})`;
-	if (offers.length === 0) return `${where} · nothing left in reach`;
-	return `${where} · ${affordable} of ${offers.length} runs affordable`;
+	if (offers.length === 0)
+		return { text: `${where} · nothing left in reach`, dark: false };
+
+	// Runs *out* of an unlit node are stillborn; runs *into* it are how you fix
+	// that, so those are the ones the line should be counting.
+	if (!solution.energized.has(node.id)) {
+		const feeds = offers.filter((o) => !o.dead).length;
+		return {
+			text:
+				feeds > 0
+					? `${where} · not fed · ${feeds}/${offers.length} rings feed it`
+					: `${where} · not fed · nothing in reach feeds it`,
+			dark: true,
+		};
+	}
+
+	const affordable = offers.filter((o) => coins >= o.cost).length;
+	return {
+		text: `${where} · ${affordable} of ${offers.length} runs affordable`,
+		dark: false,
+	};
 }
 
 /**
@@ -53,11 +81,11 @@ export default function FlowyApp({ corner }: { corner?: ReactNode }) {
 				<div className="flowy-sheet">
 					<button
 						type="button"
-						className="flowy-sheet-tab"
+						className={`flowy-sheet-tab${summary.dark ? ' dark' : ''}`}
 						aria-expanded={sheetOpen}
 						onClick={() => setSheetOpen((open) => !open)}
 					>
-						<span className="flowy-sheet-title">{summary}</span>
+						<span className="flowy-sheet-title">{summary.text}</span>
 						<span className="flowy-sheet-caret" aria-hidden="true">
 							{sheetOpen ? 'Hide ▾' : 'Details ▴'}
 						</span>

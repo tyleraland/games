@@ -563,6 +563,14 @@
 		font-weight: 600;
 	}
 
+	/* Anchored somewhere nothing would flow from: the collapsed line matches the
+	   amber warning that is waiting inside the panel. */
+	.flowy-sheet-tab.dark {
+		background: rgba(232, 163, 61, 0.12);
+		color: #e8c68a;
+		box-shadow: inset 0 2px 0 rgba(232, 163, 61, 0.55);
+	}
+
 	.flowy-sheet-caret {
 		flex-shrink: 0;
 		font-size: 11px;
@@ -594,8 +602,14 @@
 		padding-right: 10px;
 	}
 
+	/* The meter row scrolls sideways underneath the absolutely-positioned "All
+	   games" link. Padding-right only reserves space at the *end* of the
+	   content, which protects nothing until you have scrolled to the end — at
+	   rest the middle meters rendered as ghost text under the button. Shrinking
+	   the scroll box instead means the row simply never reaches that corner, at
+	   any scroll position. */
 	.flowy-hud-row:first-child {
-		padding-right: 92px;
+		max-width: calc(100% - 104px);
 	}
 
 	.flowy-hud-row {
